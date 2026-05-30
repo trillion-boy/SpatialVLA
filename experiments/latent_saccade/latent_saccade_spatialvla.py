@@ -613,7 +613,6 @@ class LatentSaccadeSpatialVLAInference:
             f"fovea_bbox={fovea_bbox}"
         )
 
-        # ── 3. Store weight_1d → hooks read during generate() ────────────
         # ── 3. Build processor inputs ─────────────────────────────────────
         pil_image = PIL_Image.fromarray(image)
         prompt = f"What action should the robot take to {goal.lower()}?"
