@@ -419,7 +419,8 @@ class LatentSaccadeSpatialVLAInference(SpatialVLAInference):
             thr = self._bbox_confidence_threshold
 
             H, W = image.shape[:2]
-            max_area_ratio = 0.5
+            # place 단계의 basket처럼 화면을 크게 차지하는 물체는 더 관대하게
+            max_area_ratio = 0.85 if self.saccade.state == "place" else 0.5
 
             def _area_ok(bbox):
                 x1, y1, x2, y2 = bbox
