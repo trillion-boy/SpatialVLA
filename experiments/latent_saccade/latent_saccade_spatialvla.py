@@ -16,16 +16,24 @@ OpenVLA (LLaMA):
 
 SpatialVLA (Gemma2, PaliGemma-style):
   시퀀스:   [patch_0..patch_255(pos 0..255)] [BOS(pos 256)] [text(pos 257..)]
-  visual:  positions [0, num_patches)          ← 핵심 변경
+  visual:  input_ids 에서 id == image_token_index 인 위치를 스캔
+           (UniVLA 의 vis_start≤id≤vis_end 스캔과 동일한 방식;
+            SpatialVLA 는 전용 image token id 가 하나라 정확 일치로 탐지)
   레이어:   model.language_model.model.layers  ← 핵심 변경
   num_patches: 256 (SigLiP 224/14 → 16×16)
 
-변경된 부분
------------
-  _find_decoder_layers : 레이어 경로 변경
-  _build_seq_weight    : 시각 위치 슬라이스 [0, num_patches) 로 변경
-  __init__             : vision_tower 경로로 num_patches 탐지
-  step()               : processor 통한 입력 구성 + decode_actions 로 연속 action 획득
+UniVLA 와의 일치
+----------------
+  UniVLA:     _build_seq_weight 가 input_ids 를 스캔해 visual 위치를 찾고
+              (seq_len,) seq_weight 를 step() 에서 만든 뒤 hook 이 읽음
+  SpatialVLA: 완전히 동일. id == image_token_index 스캔만 다름.
+
+변경된 부분 (vs OpenVLA 포팅본)
+------------------------------
+  _find_decoder_layers : 레이어 경로 변경 (Gemma2)
+  _build_seq_weight    : input_ids 스캔으로 visual 위치 탐지 (UniVLA 방식)
+  __init__             : processor.image_seq_length 로 num_patches 탐지
+  step()               : processor 입력 구성 + decode_actions 로 연속 action 획득
 
 변경되지 않은 부분
 -----------------
