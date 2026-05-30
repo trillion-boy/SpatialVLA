@@ -614,23 +614,29 @@ class LatentSaccadeSpatialVLAInference:
         )
 
         # ── 3. Store weight_1d → hooks read during generate() ────────────
-        self._current_weight_1d = weight_1d
-
-        # ── 4. Build processor inputs ─────────────────────────────────────
+        # ── 3. Build processor inputs ─────────────────────────────────────
         pil_image = PIL_Image.fromarray(image)
         prompt = f"What action should the robot take to {goal.lower()}?"
 
+        inputs = self.processor(
+            images=[pil_image],
+            text=prompt,
+            unnorm_key=self._unnorm_key,
+            return_tensors="pt",
+        )
+
+        # ── 4. Build full seq_weight by scanning input_ids → hooks read it ─
+        # (mirrors UniVLA: locate visual tokens in the actual sequence, then
+        #  place the spatial weights at exactly those positions)
+        self._current_seq_weight = self._build_seq_weight(
+            inputs["input_ids"], weight_1d
+        )
+
         try:
-            inputs = self.processor(
-                images=[pil_image],
-                text=prompt,
-                unnorm_key=self._unnorm_key,
-                return_tensors="pt",
-            )
             # predict_action internally calls .to(bfloat16).to(device)
             generation_outputs = self.model.predict_action(inputs)
         finally:
-            self._current_weight_1d = None   # always clear after generate
+            self._current_seq_weight = None   # always clear after generate
 
         # ── 5. Decode token IDs → continuous action ───────────────────────
         # generation_outputs: (1, max_new_tokens) token ID tensor
