@@ -2,6 +2,14 @@
 
 UniVLA용 Colab 셋업을 SpatialVLA에 맞게 포팅한 버전.
 
+## 설계 원칙
+
+공정한 대조 실험을 위해 `LatentSaccadeSpatialVLAInference` 는 공식
+`SpatialVLAInference` (DelinQu/SimplerEnv-OpenVLA fork) 를 **상속** 합니다.
+ActionEnsembler, image history, do_normalize=False, cv2 resize, raw prompt 등
+공식 파이프라인은 전혀 변경되지 않고, hook 만 추가됩니다.
+`--no-latent-mask` 플래그 하나로 ON / OFF 를 동일 코드에서 실험합니다.
+
 ## UniVLA 대비 핵심 차이
 
 | 항목 | UniVLA | SpatialVLA |
@@ -65,7 +73,6 @@ source /usr/local/etc/profile.d/conda.sh
 conda run -n spatialvla conda install -c conda-forge gcc=12.1.0 gxx_linux-64 -y
 conda run -n spatialvla pip install mediapy
 # SpatialVLA는 PaliGemma2 백본 → transformers 4.47.0 필수
-# (UniVLA의 4.44.0 / tiktoken / decord 는 SpatialVLA에 불필요)
 conda run -n spatialvla pip install transformers==4.47.0 tokenizers==0.21.0 pillow
 conda run -n spatialvla pip install matplotlib
 ```
@@ -76,13 +83,13 @@ conda run -n spatialvla pip install matplotlib
 %%bash
 source /usr/local/etc/profile.d/conda.sh
 
-# SpatialVLA — Latent Saccade 실험 코드가 있는 브랜치로 클론
+# SpatialVLA — Latent Saccade 실험 코드가 있는 브랜치
 if [ ! -d /content/SpatialVLA ]; then
   git clone --depth 1 -b claude/happy-hypatia-y9BTO \
     https://github.com/trillion-boy/spatialvla.git /content/SpatialVLA
 fi
 
-# SimplerEnv (SpatialVLA/OpenVLA 지원 fork) 클론
+# SimplerEnv (SpatialVLA/OpenVLA 지원 fork, allenzren/ManiSkill2_real2sim 서브모듈 포함)
 if [ ! -d /content/SimplerEnv ]; then
   git clone https://github.com/DelinQu/SimplerEnv-OpenVLA \
     --recurse-submodules -q /content/SimplerEnv
@@ -301,14 +308,13 @@ import os
 
 model_path = "/content/pretrain/spatialvla-4b-224-pt"
 
-print(f"{'✅' if os.path.isdir(model_path) else '❌'} SpatialVLA model: {model_path}")
+print(f"{'OK' if os.path.isdir(model_path) else 'MISSING'} SpatialVLA model: {model_path}")
 if os.path.isdir(model_path):
     files = sorted(os.listdir(model_path))
     print("   files:", files[:20])
-    # 핵심 파일 존재 확인
     for need in ["config.json", "modeling_spatialvla.py", "processing_spatialvla.py"]:
-        mark = "✅" if need in files else "⚠️ "
-        print(f"   {mark} {need}")
+        mark = "OK" if need in files else "MISSING"
+        print(f"   {mark}: {need}")
 ```
 
 ## 16. torch CUDA 12.1 재설치 (Colab GPU 매칭)
@@ -330,7 +336,6 @@ conda run -n spatialvla python -c "import torch; print('torch', torch.__version_
 source /usr/local/etc/profile.d/conda.sh
 export SIMPLER_ENV_ROOT=/content/SimplerEnv
 export PYTHONPATH=/content/SpatialVLA:$PYTHONPATH
-# 헤드리스 렌더링
 export DISPLAY=""
 export VK_ICD_FILENAMES=/etc/vulkan/icd.d/nvidia_icd.json
 
@@ -379,7 +384,7 @@ import json, os
 def load(p):
     fp = os.path.join(p, "results_widowx_put_eggplant_in_basket.json")
     if not os.path.exists(fp):
-        print(f"❌ 결과 없음: {fp}")
+        print(f"결과 없음: {fp}")
         return None
     with open(fp) as f:
         return json.load(f)
@@ -407,7 +412,7 @@ if on and off:
   `spatialvla_eval.py`는 이미 `try/except`로 `"spatialvla"` 실패 시 `"openvla"` 제어 모드로 fallback합니다. WidowX의 경우 둘 다 `arm_pd_ee_delta_pose`로 매핑되어 동일합니다.
 
 - **flash-attn 미설치 경고**:
-  SpatialVLA의 Gemma2 백본은 SDPA를 자동으로 eager로 전환합니다(logit softcapping). `spatialvla_eval.py`의 `load_spatialvla()`는 `attn_implementation`을 지정하지 않으므로 flash-attn 없이도 작동합니다. Colab에서 flash-attn 빌드는 불필요합니다.
+  SpatialVLA의 Gemma2 백본은 SDPA를 자동으로 eager로 전환합니다(logit softcapping). flash-attn 없이도 작동합니다. Colab에서 flash-attn 빌드는 불필요합니다.
 
 - **numpy 버전 충돌**:
   SAPIEN/ManiSkill은 `numpy==1.24.4`를 요구합니다. transformers 4.47.0과 호환되므로 1.24.4로 고정하세요. (SpatialVLA requirements의 1.26.4는 학습용이며 추론엔 불필요)
@@ -417,3 +422,6 @@ if on and off:
 
 - **OOM (T4 15GB 등)**:
   SpatialVLA 4B(bf16) + GroundingDINO + SimplerEnv 렌더링은 약 10~12GB를 사용합니다. T4에서도 동작하지만 여유가 적으면 `--dino-cache-steps`를 늘려 DINO 호출 빈도를 줄이세요.
+
+- **공정한 대조 실험 보장**:
+  ON/OFF 두 실행 모두 동일한 `spatialvla_eval.py` 를 사용합니다. OFF 시 (`--no-latent-mask`) hook 은 등록되어 있지만 `_current_weight_1d is None` 조건에서 즉시 return 하므로 아무 영향이 없습니다. ActionEnsembler, image history, do_normalize, resize 등 공식 파이프라인은 두 조건에서 완전히 동일합니다.

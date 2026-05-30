@@ -2,20 +2,23 @@
 """
 spatialvla_eval.py
 
-SpatialVLA + Latent Saccade 평가 스크립트.
-openvla_eval.py에서 변경된 부분:
-  - 모델 로드: AutoModelForVision2Seq → AutoModel (SpatialVLA HF 방식)
-  - action 처리: predict_action() → predict_action() + decode_actions()
-  - unnorm_key 형식: "bridge_orig" → "bridge_orig/1.0.0" (SpatialVLA 통계 키)
-  - 사용 클래스: LatentSaccadeOpenVLAInference → LatentSaccadeSpatialVLAInference
+SpatialVLA + Latent Saccade SimplerEnv 평가 스크립트.
+
+LatentSaccadeSpatialVLAInference 가 공식 SpatialVLAInference 를 상속하므로
+ActionEnsembler, image history, do_normalize=False, cv2 resize, raw prompt 등
+공식 파이프라인이 완벽히 동일하게 유지됩니다.
+--no-latent-mask 플래그로 ON / OFF 를 동일 코드에서 대조 실험합니다.
 
 사용법:
+  # Latent Saccade ON
   python experiments/latent_saccade/spatialvla_eval.py \\
-    --model-path <spatialvla-checkpoint-path> \\
-    --unnorm-key bridge_orig/1.0.0 \\
-    --task widowx_put_eggplant_in_basket \\
-    --n-episodes 24 \\
-    --fovea-weight 1.3 --bg-weight 1.0 --place-src-weight 1.1
+    --model-path IPEC-COMMUNITY/spatialvla-4b-224-pt \\
+    --task widowx_put_eggplant_in_basket --n-episodes 24
+
+  # Baseline (OFF)
+  python experiments/latent_saccade/spatialvla_eval.py \\
+    --model-path IPEC-COMMUNITY/spatialvla-4b-224-pt \\
+    --task widowx_put_eggplant_in_basket --n-episodes 24 --no-latent-mask
 """
 
 import sys
@@ -34,7 +37,7 @@ if os.path.exists(SIMPLER_ENV_ROOT):
     sys.path.insert(0, os.path.join(SIMPLER_ENV_ROOT, "ManiSkill2_real2sim"))
 
 
-# ── Task configs (OpenVLA eval과 동일) ─────────────────────────────────────
+# ── Task configs ───────────────────────────────────────────────────────────
 TASK_CONFIGS = {
     "widowx_put_eggplant_in_basket": {
         "env_name": "PutEggplantInBasketScene-v0",
@@ -90,9 +93,11 @@ TASK_CONFIGS = {
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--model-path", required=True,
-                   help="HF hub path or local dir for SpatialVLA checkpoint")
+                   help="HF hub 경로 또는 로컬 체크포인트 디렉토리")
     p.add_argument("--unnorm-key", default="bridge_orig/1.0.0",
-                   help="Dataset key for un-normalization (e.g. 'bridge_orig/1.0.0').")
+                   help="action un-normalization 통계 키")
+    p.add_argument("--policy-setup", default="widowx_bridge",
+                   choices=["widowx_bridge", "google_robot"])
     p.add_argument("--task", default="widowx_put_eggplant_in_basket",
                    choices=list(TASK_CONFIGS.keys()))
     p.add_argument("--n-episodes", type=int, default=24)
@@ -113,9 +118,10 @@ def parse_args():
     p.add_argument("--box-threshold",   type=float, default=0.15)
     p.add_argument("--text-threshold",  type=float, default=0.15)
     p.add_argument("--dino-debug-dir",  default=None)
-    # Misc
+    # Toggle foveation
     p.add_argument("--enable-latent-mask", action="store_true", default=True)
     p.add_argument("--no-latent-mask",     dest="enable_latent_mask", action="store_false")
+    # Video / OOD
     p.add_argument("--save-video",  action="store_true")
     p.add_argument("--no-overlay",  action="store_true",
                    help="OOD: rgb_overlay 제거")
@@ -126,29 +132,9 @@ def parse_args():
     return p.parse_args()
 
 
-def load_spatialvla(model_path: str, device: str = "cuda"):
-    """
-    SpatialVLA 모델 로드 (HF AutoModel 방식).
-    test/test_huggingface.py 와 동일한 로딩 방식.
-    """
-    import torch
-    from transformers import AutoModel, AutoProcessor
-
-    print(f"[load] SpatialVLA from {model_path} ...", flush=True)
-    processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
-    model = AutoModel.from_pretrained(
-        model_path,
-        trust_remote_code=True,
-        torch_dtype=torch.bfloat16,
-    ).eval().to(device)
-    print(f"[OK] SpatialVLA loaded  dtype={next(model.parameters()).dtype}", flush=True)
-    return model, processor
-
-
 def build_env(cfg, ep_id, no_overlay=False, overlay_path=None):
     from simpler_env.utils.env.env_builder import build_maniskill2_env, get_robot_control_mode
     robot = cfg["robot"]
-    # SpatialVLA bridge-trained: same EEF delta control mode as OpenVLA
     try:
         control_mode = get_robot_control_mode(robot, "spatialvla")
     except Exception:
@@ -197,21 +183,22 @@ def apply_brightness(image: np.ndarray, factor: float) -> np.ndarray:
 def main():
     args = parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
-    device = "cuda"
 
     task_cfg = TASK_CONFIGS[args.task]
     cam_name = task_cfg["obs_camera_name"]
 
-    # ── 모델 로드 & LatentSaccade 인스턴스 생성 ────────────────────────────
-    model, processor = load_spatialvla(args.model_path, device=device)
-
+    # ── SpatialVLA path for latent_saccade module ──────────────────────────
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
     from experiments.latent_saccade.latent_saccade_spatialvla import LatentSaccadeSpatialVLAInference
-    saccade_model = LatentSaccadeSpatialVLAInference(
-        model=model,
-        processor=processor,
+
+    # ── Instantiate model (model loading happens inside __init__) ──────────
+    # All official SpatialVLAInference params are passed through so the
+    # pipeline is exactly equivalent to running the vanilla policy.
+    policy = LatentSaccadeSpatialVLAInference(
+        saved_model_path=args.model_path,
         unnorm_key=args.unnorm_key,
-        device=device,
+        policy_setup=args.policy_setup,
+        # Latent Saccade params
         dino_model=args.dino_model,
         dino_cache_steps=args.dino_cache_steps,
         box_threshold=args.box_threshold,
@@ -227,12 +214,12 @@ def main():
         dino_debug_dir=args.dino_debug_dir,
     )
     print(
-        f"[OK] Model loaded  num_patches={saccade_model.num_patches}  "
+        f"[OK] num_patches={policy.num_patches}  "
         f"enable_latent_mask={args.enable_latent_mask}",
         flush=True,
     )
 
-    # ── Episode loop ────────────────────────────────────────────────────────
+    # ── Episode loop ───────────────────────────────────────────────────────
     base_ids = list(range(*task_cfg["obj_episode_range"]))
     ep_ids   = [base_ids[i % len(base_ids)] for i in range(args.n_episodes)]
     results  = []
@@ -242,20 +229,23 @@ def main():
         env, obs    = build_env(task_cfg, ep_id, no_overlay=args.no_overlay, overlay_path=args.overlay_path)
         instruction = env.get_language_instruction()
         image       = get_image(env, obs, cam_name)
+        image       = apply_brightness(image, args.brightness)
         print(f"   instruction: {instruction}", flush=True)
 
-        saccade_model.reset()
-        image = apply_brightness(image, args.brightness)
-        frames = [image.copy()] if args.save_video else []
-        done = truncated = False
-        grasped = False
-        step = 0
-        t0   = time.time()
+        # reset() takes task_description (matches official SpatialVLAInference API)
+        policy.reset(instruction)
+
+        frames    = [image.copy()] if args.save_video else []
+        done      = truncated = False
+        grasped   = False
+        step      = 0
+        t0        = time.time()
 
         while not (done or truncated) and step < task_cfg["max_episode_steps"]:
-            # SpatialVLA action: shape (7,) = [dx, dy, dz, drx, dry, drz, gripper]
-            action = saccade_model.step(image, instruction)
+            # step() returns (raw_action, action) — identical to official policy
+            raw_action, action = policy.step(image, instruction)
 
+            # action is a dict: world_vector, rot_axangle, gripper, terminate_episode
             obs, _, done, truncated, info = env.step(action)
             image = apply_brightness(get_image(env, obs, cam_name), args.brightness)
 
@@ -267,14 +257,15 @@ def main():
             if args.save_video and step % 4 == 0:
                 frames.append(image.copy())
 
+            # If environment changes the instruction (multi-stage tasks), sync policy
             new_instr = env.get_language_instruction()
             if new_instr != instruction:
                 instruction = new_instr
-                saccade_model.reset()
+                policy.reset(instruction)
 
             step += 1
 
-        elapsed = time.time() - t0
+        elapsed   = time.time() - t0
         grasp_str = "G+" if grasped else "G-"
         status    = "SUCCESS" if done else "FAIL"
         print(f"   → {grasp_str} {status}  ({step} steps, {elapsed:.1f}s)", flush=True)
@@ -292,13 +283,14 @@ def main():
             "steps": step, "elapsed": elapsed,
         })
 
-    # ── Summary ─────────────────────────────────────────────────────────────
+    # ── Summary ────────────────────────────────────────────────────────────
     n_grasp = sum(r["grasped"] for r in results)
     n_ok    = sum(r["success"] for r in results)
     gr      = n_grasp / len(results)
     sr      = n_ok    / len(results)
+    tag     = "ON" if args.enable_latent_mask else "OFF (baseline)"
     print(f"\n{'='*50}", flush=True)
-    print(f"  model:     SpatialVLA + LatentSaccade", flush=True)
+    print(f"  model:     SpatialVLA + LatentSaccade [{tag}]", flush=True)
     print(f"  task:      {args.task}", flush=True)
     print(f"  파지율:    {n_grasp}/{len(results)} = {gr:.1%}", flush=True)
     print(f"  성공률:    {n_ok}/{len(results)} = {sr:.1%}", flush=True)
@@ -306,11 +298,11 @@ def main():
     print(f"{'='*50}", flush=True)
     for r in results:
         g_mark = "G+" if r["grasped"] else "G-"
-        s_mark = "✓" if r["success"] else "✗"
+        s_mark = "OK" if r["success"] else "--"
         print(f"  {s_mark}{g_mark} ep{r['ep']:02d} (id={r['ep_id']}): {r['steps']} steps", flush=True)
 
     summary = {
-        "model": "SpatialVLA+LatentSaccade",
+        "model": f"SpatialVLA+LatentSaccade[{tag}]",
         "task": args.task,
         "enable_latent_mask": args.enable_latent_mask,
         "ood_no_overlay": args.no_overlay,
@@ -327,6 +319,7 @@ def main():
             "consec_close": args.consec_close,
             "dino_cache_steps": args.dino_cache_steps,
             "unnorm_key": args.unnorm_key,
+            "policy_setup": args.policy_setup,
         },
         "episodes": results,
     }

@@ -3,58 +3,25 @@ latent_saccade_spatialvla.py
 
 SpatialVLA용 Latent Saccade (Post-RMSNorm variant).
 
-OpenVLA 포팅 버전과 메커니즘 동일:
-  token embeddings → RMSNorm × weight → Q,K,V
-                              ↑ weight survives into attention
+공식 SpatialVLAInference (DelinQu/SimplerEnv-OpenVLA fork) 를 상속하여
+latent saccade foveation hook 만 추가합니다.
+ActionEnsembler, image history, do_normalize=False, cv2 resize, raw prompt 등
+공식 파이프라인은 모두 super().step() 이 그대로 처리합니다.
+단 하나의 차이: predict_action() 호출 중 input_layernorm hook 이 visual
+patch 위치의 hidden state 를 공간적으로 가중합니다.
 
-OpenVLA와의 핵심 차이
---------------------
-OpenVLA (LLaMA):
-  시퀀스:   [BOS(pos 0)] [patch_0..patch_255(pos 1..256)] [text(pos 257..)]
-  visual:  positions [1, 1+num_patches)
-  레이어:   model.llm_backbone.llm.model.layers
+아키텍처
+--------
+SpatialVLA = PaliGemma2 (SigLiP + Gemma2 18층)
+  시퀀스:   [image_token × num_patches][BOS][text...]
+  visual:  첫 num_patches 위치 (PaliGemma 고정 레이아웃 — positional assumption)
+  레이어:  model.language_model.model.layers  (Gemma2ForCausalLM)
 
-SpatialVLA (Gemma2, PaliGemma-style):
-  시퀀스:   [patch_0..patch_255(pos 0..255)] [BOS(pos 256)] [text(pos 257..)]
-  visual:  input_ids 에서 id == image_token_index 인 위치를 스캔
-           (UniVLA 의 vis_start≤id≤vis_end 스캔과 동일한 방식;
-            SpatialVLA 는 전용 image token id 가 하나라 정확 일치로 탐지)
-  레이어:   model.language_model.model.layers  ← 핵심 변경
-  num_patches: 256 (SigLiP 224/14 → 16×16)
-
-UniVLA 와의 일치
-----------------
-  UniVLA:     _build_seq_weight 가 input_ids 를 스캔해 visual 위치를 찾고
-              (seq_len,) seq_weight 를 step() 에서 만든 뒤 hook 이 읽음
-  SpatialVLA: 완전히 동일. id == image_token_index 스캔만 다름.
-
-변경된 부분 (vs OpenVLA 포팅본)
-------------------------------
-  _find_decoder_layers : 레이어 경로 변경 (Gemma2)
-  _build_seq_weight    : input_ids 스캔으로 visual 위치 탐지 (UniVLA 방식)
-  __init__             : processor.image_seq_length 로 num_patches 탐지
-  step()               : processor 입력 구성 + decode_actions 로 연속 action 획득
-
-변경되지 않은 부분
------------------
-  SaccadeStateMachine (완전 동일)
-  GroundingDINODetector (완전 동일)
-  hook 핸들러 구조 (output * w.view(1, seq_len, 1))
-  _register_postnorm_hooks 구조
-  _current_seq_weight 메커니즘
-  _build_weight_map (grid 기반, 동일)
-  _get_bboxes, 2-tier cache 로직 (동일)
-
-Usage
------
-  model, processor = load_spatialvla(model_path)
-  saccade = LatentSaccadeSpatialVLAInference(
-      model=model, processor=processor,
-      unnorm_key="bridge_orig/1.0.0",
-      bg_weight=1.0, place_src_weight=1.1, fovea_weight=1.3,
-  )
-  saccade.reset()
-  action = saccade.step(image_np, instruction)   # np.ndarray (7,)
+Hook 위치 (post-RMSNorm variant)
+--------------------------------
+  token_emb → RMSNorm → *weight* → Q, K, V
+  weight 가 Q, K 양쪽에 곱해지므로 attention score 는 weight² 로 증폭.
+  UniVLA / OpenVLA postnorm 버전과 동일한 효과.
 """
 
 from __future__ import annotations
@@ -64,7 +31,15 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 import torch
-from PIL import Image as PIL_Image
+
+try:
+    from simpler_env.policies.spatialvla.spatialvla_model import SpatialVLAInference
+except ImportError as exc:
+    raise ImportError(
+        "simpler_env 를 찾을 수 없습니다. DelinQu/SimplerEnv-OpenVLA fork 를 설치하세요:\n"
+        "  git clone https://github.com/DelinQu/SimplerEnv-OpenVLA --recurse-submodules\n"
+        "  pip install -e SimplerEnv-OpenVLA"
+    ) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -75,10 +50,10 @@ class SaccadeStateMachine:
     """
     Grasp / Place 2-phase state machine.
 
-    state="grasp"  → fovea on source object
-    state="place"  → fovea on destination object
-    Transition: gripper close count ≥ consecutive_close_required
-                AND grasp_steps ≥ min_grasp_steps
+    state='grasp'  → fovea on source object
+    state='place'  → fovea on destination object
+    Transition: gripper close count >= consecutive_close_required
+                AND grasp_steps >= min_grasp_steps
     """
 
     def __init__(
@@ -159,7 +134,9 @@ class GroundingDINODetector:
         device: str = "cuda",
     ):
         from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
+        from PIL import Image as PIL_Image
 
+        self._PIL_Image = PIL_Image
         self.processor = AutoProcessor.from_pretrained(model_id)
         self.model = AutoModelForZeroShotObjectDetection.from_pretrained(model_id).to(device)
         self.model.eval()
@@ -170,14 +147,12 @@ class GroundingDINODetector:
     def detect(
         self, image_np: np.ndarray, text: str
     ) -> List[Tuple[np.ndarray, float]]:
-        """
-        Returns [(bbox_xyxy_pixels, score), ...] sorted by score descending.
-        """
+        """Returns [(bbox_xyxy_pixels, score), ...] sorted by score descending."""
         if not text:
             return []
         if not text.endswith("."):
             text = text + "."
-        pil_image = PIL_Image.fromarray(image_np)
+        pil_image = self._PIL_Image.fromarray(image_np)
         inputs = self.processor(
             images=pil_image, text=text, return_tensors="pt"
         ).to(self.device)
@@ -206,7 +181,7 @@ class GroundingDINODetector:
     def extract_source_dest_nouns(instruction: str) -> Tuple[str, str]:
         """
         Regex-based extraction for standard manipulation instructions.
-        e.g. "put the eggplant in the basket" → ("eggplant", "basket")
+        e.g. 'put the eggplant in the basket' → ('eggplant', 'basket')
         """
         inst = instruction.lower().strip()
         pattern = (
@@ -225,36 +200,43 @@ class GroundingDINODetector:
 
 
 # ---------------------------------------------------------------------------
-# Main inference class
+# Main inference class  — inherits from official SpatialVLAInference
 # ---------------------------------------------------------------------------
 
-class LatentSaccadeSpatialVLAInference:
+class LatentSaccadeSpatialVLAInference(SpatialVLAInference):
     """
-    Latent Saccade for SpatialVLA (post-RMSNorm variant).
+    SpatialVLA + Latent Saccade foveation.
 
-    Mechanism (identical to UniVLA / OpenVLA postnorm):
-      Registers persistent forward hooks on input_layernorm of every Gemma2
-      decoder layer.  During the prefill forward pass (seq_len > 1), the hook
-      multiplies hidden_states by a (seq_len,) weight tensor.
+    상속 전략
+    ---------
+    SpatialVLAInference (공식 파이프라인) 를 그대로 상속하고, step() 에서
+    super().step() 을 호출하기 전에 _current_weight_1d 를 세팅합니다.
+    super().step() 내부에서 predict_action() 이 호출될 때 prefill forward
+    pass 에 걸린 hook 이 해당 weight 를 hidden state 에 곱합니다.
+    공식 파이프라인 (ActionEnsembler, image history, do_normalize=False,
+    cv2 resize, raw task_description prompt) 은 전혀 변경되지 않습니다.
 
-      Weight tensor (SpatialVLA / PaliGemma-style sequence):
-        visual patch positions → spatial weight from DINO detection
-        BOS + text + padding   → 1.0
-
-    Visual position identification (matches UniVLA's input_ids scan):
-      UniVLA:     scan input_ids for vis_start ≤ id ≤ vis_end
-      OpenVLA:    fixed positional slice [1, 1+num_patches)
-      SpatialVLA: scan input_ids for id == image_token_index  ← exact match
-                  (PaliGemma uses one dedicated image token id, so the scan is
-                  exact rather than a range; positions need not be assumed.)
+    Hook 동작
+    ---------
+    _current_weight_1d:  (num_patches,) float32 텐서
+    hook: seq_len > 1 인 prefill 단계에서만 동작.
+          첫 num_patches 위치 = visual patch → weight 적용
+          나머지 위치 (BOS + text) → 1.0 (변경 없음)
+          PaliGemma2 시퀀스는 항상 [image_tokens × N][BOS][text...] 이므로
+          positional assumption 이 항상 성립함.
     """
 
     def __init__(
         self,
-        model,
-        processor=None,
+        # ── Official SpatialVLAInference params ────────────────────────────
+        saved_model_path: str = "IPEC-COMMUNITY/spatialvla-4b-224-pt",
         unnorm_key: Optional[str] = None,
-        device: str = "cuda",
+        policy_setup: str = "widowx_bridge",
+        exec_horizon: int = 1,
+        image_size: list = None,
+        action_scale: float = 1.0,
+        action_ensemble_temp: float = -0.8,
+        # ── Latent Saccade params ──────────────────────────────────────────
         dino_model: str = "IDEA-Research/grounding-dino-tiny",
         dino_cache_steps: int = 5,
         box_threshold: float = 0.15,
@@ -270,10 +252,22 @@ class LatentSaccadeSpatialVLAInference:
         enable_latent_mask: bool = True,
         dino_debug_dir: Optional[str] = None,
     ):
-        self.model = model
-        self.processor = processor
-        self.device = device
-        self._unnorm_key = unnorm_key
+        if image_size is None:
+            image_size = [224, 224]
+
+        # Initialise the official SpatialVLAInference (loads model, processor,
+        # ActionEnsembler, image history deque, gripper state, etc.)
+        super().__init__(
+            saved_model_path=saved_model_path,
+            unnorm_key=unnorm_key,
+            policy_setup=policy_setup,
+            exec_horizon=exec_horizon,
+            image_size=image_size,
+            action_scale=action_scale,
+            action_ensemble_temp=action_ensemble_temp,
+        )
+
+        # ── Saccade weights ────────────────────────────────────────────────
         self._bg_weight = bg_weight
         self._place_src_weight = place_src_weight
         self._fovea_weight = fovea_weight
@@ -282,25 +276,15 @@ class LatentSaccadeSpatialVLAInference:
         self._bbox_margin = bbox_margin
         self._dino_debug_dir = dino_debug_dir
 
-        # ── Visual patch config ───────────────────────────────────────────
-        # SpatialVLA uses SigLiP vision tower (not Prismatic vision_backbone).
-        # Prefer processor.image_seq_length (set from image_processor.image_seq_length).
-        # Fallback: compute from vision_config (image_size / patch_size)^2.
-        if processor is not None and hasattr(processor, "image_seq_length"):
-            self.num_patches: int = processor.image_seq_length
-        else:
-            try:
-                cfg = model.config.vision_config
-                self.num_patches = (cfg.image_size // cfg.patch_size) ** 2
-            except AttributeError:
-                self.num_patches = 256  # SigLiP 224/14 default
+        # ── Visual patch config (after super().__init__ so self.vla / processor exist) ──
+        # processor.image_seq_length == num visual tokens injected into sequence
+        self.num_patches: int = self.processor.image_seq_length
         self._grid_size: int = int(round(self.num_patches ** 0.5))
         assert self._grid_size ** 2 == self.num_patches, (
-            f"num_patches={self.num_patches} is not a perfect square; "
-            "update _build_weight_map if using non-square patch grids."
+            f"num_patches={self.num_patches} is not a perfect square."
         )
 
-        # ── Saccade state machine ─────────────────────────────────────────
+        # ── Saccade state machine ──────────────────────────────────────────
         self.saccade = SaccadeStateMachine(
             min_grasp_steps=min_grasp_steps,
             consecutive_close_required=consecutive_close_required,
@@ -308,26 +292,19 @@ class LatentSaccadeSpatialVLAInference:
             max_grasp_steps=max_grasp_steps,
         )
 
-        # ── GroundingDINO detector ────────────────────────────────────────
+        # ── GroundingDINO detector ─────────────────────────────────────────
         self.detector = GroundingDINODetector(
             model_id=dino_model,
             box_threshold=box_threshold,
             text_threshold=text_threshold,
-            device=device,
+            device="cuda",
         )
 
-        # ── Image token id (for input_ids scan, mirrors UniVLA vis_start/vis_end) ──
-        # SpatialVLA has a single dedicated image token (PaliGemma image_token_index),
-        # so an exact equality scan is more precise than UniVLA's range check.
-        self._image_token_index: int = getattr(
-            getattr(model, "config", None), "image_token_index", 256000
-        )
-
-        # ── Internal state ────────────────────────────────────────────────
-        self._current_instruction: Optional[str] = None
-        # Full (seq_len,) weight tensor built in step() from input_ids scan.
-        # (UniVLA stores _current_seq_weight the same way.)
-        self._current_seq_weight: Optional[torch.Tensor] = None
+        # ── Internal state ─────────────────────────────────────────────────
+        # _saccade_instruction: tracks last instruction for saccade noun extraction
+        self._saccade_instruction: Optional[str] = None
+        # (num_patches,) weight set before super().step(); read by hook during predict_action()
+        self._current_weight_1d: Optional[torch.Tensor] = None
         self._ln_hook_handles: List = []
         self._bbox_confidence_threshold: float = 0.3
         self._fovea_bbox_cache = None
@@ -336,29 +313,25 @@ class LatentSaccadeSpatialVLAInference:
         self._last_good_secondary = None
         self._cache_step: int = 0
 
-        # ── Register post-RMSNorm hooks ───────────────────────────────────
+        # ── Register post-RMSNorm hooks ────────────────────────────────────
         self._register_postnorm_hooks()
 
-    # ── Layer discovery ───────────────────────────────────────────────────
+    # ── Layer / norm discovery ─────────────────────────────────────────────
 
     def _find_decoder_layers(self):
         """
-        SpatialVLA layer path (changed from OpenVLA):
-          OpenVLA:     model.llm_backbone.llm.model.layers  (LLaMA)
-          SpatialVLA:  model.language_model.model.layers    (Gemma2)
-            language_model : Gemma2ForCausalLM
-            model          : Gemma2Model
-            layers         : ModuleList[Gemma2DecoderLayer]
+        Return the decoder layer ModuleList from self.vla.
+        SpatialVLA (PaliGemma2 / Gemma2): model.language_model.model.layers
         """
         candidates = [
-            lambda m: m.language_model.model.layers,    # SpatialVLA (Gemma2)
+            lambda m: m.language_model.model.layers,   # SpatialVLA (Gemma2)
             lambda m: m.llm_backbone.llm.model.layers,  # OpenVLA (LLaMA)
             lambda m: m.llm_backbone.model.layers,
             lambda m: m.model.layers,
         ]
         for fn in candidates:
             try:
-                layers = fn(self.model)
+                layers = fn(self.vla)
                 if layers is not None and len(layers) > 0:
                     return layers
             except AttributeError:
@@ -370,10 +343,7 @@ class LatentSaccadeSpatialVLAInference:
         )
 
     def _find_layernorm(self, layer):
-        """
-        Gemma2DecoderLayer has input_layernorm — same attribute name as LLaMA.
-        No change needed vs OpenVLA version.
-        """
+        """Return the pre-attention RMSNorm of a decoder layer."""
         for attr in ("input_layernorm", "ln_1", "layer_norm_1", "norm1"):
             if hasattr(layer, attr):
                 return getattr(layer, attr)
@@ -382,18 +352,23 @@ class LatentSaccadeSpatialVLAInference:
             f"Norm-like attrs: {[a for a in dir(layer) if 'norm' in a.lower() or 'ln' in a.lower()]}"
         )
 
-    # ── Hook registration ─────────────────────────────────────────────────
+    # ── Hook registration ──────────────────────────────────────────────────
 
     def _register_postnorm_hooks(self):
         """
-        Hook logic identical to UniVLA postnorm.
+        Register persistent forward hooks on input_layernorm of every Gemma2
+        decoder layer.
 
-        UniVLA pre-builds a (seq_len,) tensor in step() via _build_seq_weight
-        (scanning input_ids for visual positions) and stores it in
-        _current_seq_weight.  The hook just reads it, clamps to the current
-        seq_len for safety, and multiplies.  We do exactly the same here —
-        the visual positions are located by an input_ids scan, NOT by a
-        fixed positional assumption.
+        Hook behaviour (post-RMSNorm variant, identical to UniVLA):
+          Prefill (seq_len > 1): multiply hidden_states by (seq_len,) weight.
+            - First num_patches positions → spatial weight from DINO bbox
+            - Remaining positions (BOS + text) → 1.0
+          AR steps (seq_len == 1): skip (KV cache active, position is fixed).
+
+        Positional assumption:
+          PaliGemma2 sequence layout is ALWAYS [img_tokens × N][BOS][text...].
+          Image tokens occupy positions 0 .. num_patches-1 in every forward pass.
+          This allows building the weight vector without scanning input_ids.
         """
         layers = self._find_decoder_layers()
 
@@ -404,21 +379,23 @@ class LatentSaccadeSpatialVLAInference:
                 def _hook(module, inp, output):
                     if not self_ref._enable_latent_mask:
                         return output
-                    if self_ref._current_seq_weight is None:
+                    if self_ref._current_weight_1d is None:
                         return output
-                    # Skip single-token autoregressive steps (KV cache active)
-                    if output.shape[1] <= 1:
+                    if output.shape[1] <= 1:   # skip AR generation steps
                         return output
 
                     seq_len = output.shape[1]
-                    w = self_ref._current_seq_weight.to(
+                    n_vis = self_ref.num_patches
+
+                    # Build (seq_len,) weight: visual = weight_1d, rest = 1.0
+                    w_1d = self_ref._current_weight_1d.to(
                         dtype=output.dtype, device=output.device
                     )
-                    # Clamp in case seq lengths differ (safety) — same as UniVLA
-                    w = w[:seq_len]
-                    out = output.clone()
-                    out = out * w.view(1, seq_len, 1)
-                    return out
+                    w = torch.ones(seq_len, dtype=output.dtype, device=output.device)
+                    n = min(n_vis, seq_len)
+                    w[:n] = w_1d[:n]
+
+                    return output * w.view(1, seq_len, 1)
                 return _hook
 
             handle = ln.register_forward_hook(_make_hook(self))
@@ -430,7 +407,7 @@ class LatentSaccadeSpatialVLAInference:
             f"(num_patches={self.num_patches}, grid={self._grid_size}×{self._grid_size})"
         )
 
-    # ── DINO detection ────────────────────────────────────────────────────
+    # ── DINO detection ─────────────────────────────────────────────────────
 
     def _get_bboxes(
         self, image: np.ndarray
@@ -478,17 +455,18 @@ class LatentSaccadeSpatialVLAInference:
         self._cache_step += 1
         return self._fovea_bbox_cache, self._secondary_bbox_cache
 
-    # ── Spatial weight map ────────────────────────────────────────────────
+    # ── Spatial weight map ─────────────────────────────────────────────────
 
     def _build_weight_map(
         self,
         image: np.ndarray,
         fovea_bbox: Optional[np.ndarray],
         secondary_bbox: Optional[np.ndarray],
-    ) -> torch.Tensor:
+    ) -> Optional[torch.Tensor]:
         """
-        Build (num_patches,) spatial weight vector.
-        Identical logic to OpenVLA version; grid_size adapts to ViT config.
+        Build (num_patches,) spatial weight vector from detected bboxes.
+        image is the original (unresized) observation — used for H/W only.
+        Returns None if no bbox detected (disables masking for this step).
         """
         if fovea_bbox is None and secondary_bbox is None:
             return None
@@ -525,74 +503,35 @@ class LatentSaccadeSpatialVLAInference:
 
         return grid.view(-1)   # (num_patches,)
 
-    # ── Sequence weight builder (mirrors UniVLA _build_seq_weight) ─────────
+    # ── Overridden step ────────────────────────────────────────────────────
 
-    def _build_seq_weight(
-        self,
-        input_ids: torch.Tensor,            # (1, seq_len)
-        weight_1d: Optional[torch.Tensor],  # (num_patches,) or None
-    ) -> Optional[torch.Tensor]:
+    def step(
+        self, image: np.ndarray, task_description: Optional[str] = None, *args, **kwargs
+    ) -> tuple[dict, dict]:
         """
-        Build a (seq_len,) weight tensor:
-          1.0   for all non-visual positions (BOS, text, padding)
-          w_i   for visual token positions, in input_ids order
+        Latent Saccade step — identical to official SpatialVLAInference.step()
+        except that visual patch hidden states are spatially weighted during
+        the prefill forward pass inside predict_action().
 
-        Visual positions are found by scanning input_ids for image_token_index
-        — the exact analogue of UniVLA's
-            is_visual = (frame_ids >= vis_start) & (frame_ids <= vis_end)
-        but using SpatialVLA's single dedicated image token id, so the match
-        is exact rather than a range.
-
-        Returns None if weight_1d is None (disables masking).
-        """
-        if weight_1d is None:
-            return None
-
-        seq_len = input_ids.shape[1]
-        seq_weight = torch.ones(seq_len, dtype=torch.float32)
-
-        is_visual = (input_ids[0] == self._image_token_index)
-        vis_idx = is_visual.nonzero(as_tuple=True)[0]   # absolute positions
-        n_vis = vis_idx.numel()
-
-        if n_vis > 0:
-            # weight_1d is the flattened patch grid in row-major order, which
-            # matches the order image tokens appear in input_ids.
-            w = weight_1d[:n_vis]
-            seq_weight[vis_idx[:w.numel()]] = w
-        else:
-            print(
-                "[LatentSaccade][warn] no image tokens found in input_ids "
-                f"(image_token_index={self._image_token_index}); mask is a no-op"
-            )
-
-        return seq_weight
-
-    # ── step: main inference with latent saccade ──────────────────────────
-
-    def step(self, image: np.ndarray, goal: str) -> np.ndarray:
-        """
-        Run one inference step.
-
-        Changes vs OpenVLA step():
-          - processor builds inputs (images + text + unnorm_key)
-          - model.predict_action() returns discrete token IDs
-          - processor.decode_actions() converts to continuous 7D action
-          - gripper signal from decoded action[-1] (same 0=close/1=open convention)
+        Foveation is added via hooks registered in __init__; everything else
+        (image resize, image history, processor call with do_normalize=False,
+        predict_action + decode_actions, ActionEnsembler, gripper conversion)
+        is handled by super().step() without modification.
 
         Returns:
-          action (np.ndarray, shape (7,)): unnormalized continuous action
-            [dx, dy, dz, drx, dry, drz, gripper]
+            raw_action: dict with 'world_vector', 'rotation_delta', 'open_gripper'
+            action:     dict with 'world_vector', 'rot_axangle', 'gripper',
+                        'terminate_episode'  — pass directly to env.step()
         """
-        # ── 1. Sync instruction → saccade nouns ──────────────────────────
-        if goal != self._current_instruction:
-            self._current_instruction = goal
-            src, dst = GroundingDINODetector.extract_source_dest_nouns(goal)
+        # ── 1. Sync saccade nouns when instruction changes ─────────────────
+        if task_description is not None and task_description != self._saccade_instruction:
+            self._saccade_instruction = task_description
+            src, dst = GroundingDINODetector.extract_source_dest_nouns(task_description)
             self.saccade.source_noun = src
             self.saccade.dest_noun = dst
             print(f"[LatentSaccade] Instruction → src='{src}'  dst='{dst}'")
 
-        # ── 2. DINO detection → spatial weight map ────────────────────────
+        # ── 2. DINO detection on original image (before resize) ────────────
         if self._enable_latent_mask:
             fovea_bbox, secondary_bbox = self._get_bboxes(image)
             weight_1d = self._build_weight_map(image, fovea_bbox, secondary_bbox)
@@ -613,42 +552,19 @@ class LatentSaccadeSpatialVLAInference:
             f"fovea_bbox={fovea_bbox}"
         )
 
-        # ── 3. Build processor inputs ─────────────────────────────────────
-        pil_image = PIL_Image.fromarray(image)
-        prompt = f"What action should the robot take to {goal.lower()}?"
-
-        inputs = self.processor(
-            images=[pil_image],
-            text=prompt,
-            unnorm_key=self._unnorm_key,
-            return_tensors="pt",
-        )
-
-        # ── 4. Build full seq_weight by scanning input_ids → hooks read it ─
-        # (mirrors UniVLA: locate visual tokens in the actual sequence, then
-        #  place the spatial weights at exactly those positions)
-        self._current_seq_weight = self._build_seq_weight(
-            inputs["input_ids"], weight_1d
-        )
-
+        # ── 3. Activate hook weight, run official pipeline ─────────────────
+        # Note: super().step() may call self.reset(task_description) internally
+        # if the instruction changed (first call of each episode).  Our reset()
+        # does NOT clear _current_weight_1d so the hook remains active.
+        self._current_weight_1d = weight_1d
         try:
-            # predict_action internally calls .to(bfloat16).to(device)
-            generation_outputs = self.model.predict_action(inputs)
+            raw_action, action = super().step(image, task_description, *args, **kwargs)
         finally:
-            self._current_seq_weight = None   # always clear after generate
+            self._current_weight_1d = None   # always clear after generate()
 
-        # ── 5. Decode token IDs → continuous action ───────────────────────
-        # generation_outputs: (1, max_new_tokens) token ID tensor
-        # decode_actions returns {"actions": (chunk, 7), "action_ids": (chunk, 3)}
-        decoded = self.processor.decode_actions(
-            generation_outputs, unnorm_key=self._unnorm_key
-        )
-        action = decoded["actions"][0]   # (7,) for action_chunk_size=1
-
-        # ── 6. Update saccade state from gripper output ───────────────────
-        # SpatialVLA: gripper token 0 → 0.0 (close), token 1 → 1.0 (open)
-        # Same convention as OpenVLA → close_thresh=0.5 works identically
-        g = float(action[-1])
+        # ── 4. Update saccade state from raw gripper output ────────────────
+        # raw_action["open_gripper"]: 0.0 = close, 1.0 = open (from tokenizer)
+        g = float(raw_action["open_gripper"])
         print(
             f"[LatentSaccade-dbg] g={g:.2f}  "
             f"close_count={self.saccade._close_count}  "
@@ -662,15 +578,18 @@ class LatentSaccadeSpatialVLAInference:
             self._cache_step = 0
             print("[LatentSaccade] State transition: grasp → place", flush=True)
 
-        return action
+        return raw_action, action
 
-    # ── Reset / Cleanup ───────────────────────────────────────────────────
+    # ── Overridden reset ───────────────────────────────────────────────────
 
-    def reset(self):
-        """Reset per-episode state (call at episode start)."""
+    def reset(self, task_description: str) -> None:
+        """Reset per-episode state. Delegates to official SpatialVLAInference.reset()."""
+        super().reset(task_description)
         self.saccade.reset()
-        self._current_instruction = None
-        self._current_seq_weight = None
+        # _saccade_instruction reset to None so saccade nouns are re-extracted next step
+        self._saccade_instruction = None
+        # Do NOT clear _current_weight_1d here — managed by step()'s finally block.
+        # (super().step() may call this reset() mid-step; the weight must remain active.)
         self._fovea_bbox_cache = None
         self._secondary_bbox_cache = None
         self._last_good_fovea = None
@@ -681,12 +600,12 @@ class LatentSaccadeSpatialVLAInference:
         for handle in getattr(self, "_ln_hook_handles", []):
             handle.remove()
 
-    # ── Debug helpers ─────────────────────────────────────────────────────
+    # ── Debug helpers ──────────────────────────────────────────────────────
 
     def _save_debug_image(self, image, fovea_bbox, secondary_bbox, grid):
         """Save annotated debug image showing detected bboxes and weight grid."""
         import os
-        from PIL import ImageDraw
+        from PIL import Image as PIL_Image, ImageDraw
         os.makedirs(self._dino_debug_dir, exist_ok=True)
         pil = PIL_Image.fromarray(image).copy()
         draw = ImageDraw.Draw(pil)
