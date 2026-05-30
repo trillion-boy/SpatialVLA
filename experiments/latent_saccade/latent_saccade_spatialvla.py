@@ -224,20 +224,21 @@ class LatentSaccadeSpatialVLAInference:
     """
     Latent Saccade for SpatialVLA (post-RMSNorm variant).
 
-    Mechanism (identical to OpenVLA postnorm):
+    Mechanism (identical to UniVLA / OpenVLA postnorm):
       Registers persistent forward hooks on input_layernorm of every Gemma2
       decoder layer.  During the prefill forward pass (seq_len > 1), the hook
       multiplies hidden_states by a (seq_len,) weight tensor.
 
       Weight tensor (SpatialVLA / PaliGemma-style sequence):
-        pos 0..255          (visual patches) → spatial weight from DINO detection
-        pos 256             (BOS)            → 1.0
-        pos 257..           (text)           → 1.0
+        visual patch positions → spatial weight from DINO detection
+        BOS + text + padding   → 1.0
 
-    Visual position identification:
-      OpenVLA:    fixed positional slice [1, 1+num_patches)   (LLaMA BOS at pos 0)
-      SpatialVLA: fixed positional slice [0,   num_patches)   ← key change
-                  PaliGemma puts image tokens first, then BOS, then text.
+    Visual position identification (matches UniVLA's input_ids scan):
+      UniVLA:     scan input_ids for vis_start ≤ id ≤ vis_end
+      OpenVLA:    fixed positional slice [1, 1+num_patches)
+      SpatialVLA: scan input_ids for id == image_token_index  ← exact match
+                  (PaliGemma uses one dedicated image token id, so the scan is
+                  exact rather than a range; positions need not be assumed.)
     """
 
     def __init__(
@@ -307,9 +308,18 @@ class LatentSaccadeSpatialVLAInference:
             device=device,
         )
 
+        # ── Image token id (for input_ids scan, mirrors UniVLA vis_start/vis_end) ──
+        # SpatialVLA has a single dedicated image token (PaliGemma image_token_index),
+        # so an exact equality scan is more precise than UniVLA's range check.
+        self._image_token_index: int = getattr(
+            getattr(model, "config", None), "image_token_index", 256000
+        )
+
         # ── Internal state ────────────────────────────────────────────────
         self._current_instruction: Optional[str] = None
-        self._current_weight_1d: Optional[torch.Tensor] = None
+        # Full (seq_len,) weight tensor built in step() from input_ids scan.
+        # (UniVLA stores _current_seq_weight the same way.)
+        self._current_seq_weight: Optional[torch.Tensor] = None
         self._ln_hook_handles: List = []
         self._bbox_confidence_threshold: float = 0.3
         self._fovea_bbox_cache = None
@@ -368,11 +378,14 @@ class LatentSaccadeSpatialVLAInference:
 
     def _register_postnorm_hooks(self):
         """
-        Hook structure identical to OpenVLA version.
+        Hook logic identical to UniVLA postnorm.
 
-        Key change vs OpenVLA:
-          OpenVLA:    w[1 : 1 + n_vis] = w1d  (visual starts at pos 1, BOS is pos 0)
-          SpatialVLA: w[0 : n_vis]     = w1d  (visual starts at pos 0, BOS is pos 256)
+        UniVLA pre-builds a (seq_len,) tensor in step() via _build_seq_weight
+        (scanning input_ids for visual positions) and stores it in
+        _current_seq_weight.  The hook just reads it, clamps to the current
+        seq_len for safety, and multiplies.  We do exactly the same here —
+        the visual positions are located by an input_ids scan, NOT by a
+        fixed positional assumption.
         """
         layers = self._find_decoder_layers()
 
@@ -383,23 +396,18 @@ class LatentSaccadeSpatialVLAInference:
                 def _hook(module, inp, output):
                     if not self_ref._enable_latent_mask:
                         return output
-                    if self_ref._current_weight_1d is None:
+                    if self_ref._current_seq_weight is None:
                         return output
                     # Skip single-token autoregressive steps (KV cache active)
                     if output.shape[1] <= 1:
                         return output
 
                     seq_len = output.shape[1]
-                    # SpatialVLA sequence layout (PaliGemma-style):
-                    #   pos 0..num_patches-1 : visual patches → spatial weight
-                    #   pos num_patches..    : BOS + text     → 1.0
-                    w = torch.ones(seq_len, dtype=output.dtype, device=output.device)
-                    w1d = self_ref._current_weight_1d.to(
+                    w = self_ref._current_seq_weight.to(
                         dtype=output.dtype, device=output.device
                     )
-                    n_vis = min(w1d.shape[0], self_ref.num_patches, seq_len)
-                    w[0 : n_vis] = w1d[:n_vis]  # visual at [0, num_patches)
-
+                    # Clamp in case seq lengths differ (safety) — same as UniVLA
+                    w = w[:seq_len]
                     out = output.clone()
                     out = out * w.view(1, seq_len, 1)
                     return out
@@ -509,6 +517,49 @@ class LatentSaccadeSpatialVLAInference:
 
         return grid.view(-1)   # (num_patches,)
 
+    # ── Sequence weight builder (mirrors UniVLA _build_seq_weight) ─────────
+
+    def _build_seq_weight(
+        self,
+        input_ids: torch.Tensor,            # (1, seq_len)
+        weight_1d: Optional[torch.Tensor],  # (num_patches,) or None
+    ) -> Optional[torch.Tensor]:
+        """
+        Build a (seq_len,) weight tensor:
+          1.0   for all non-visual positions (BOS, text, padding)
+          w_i   for visual token positions, in input_ids order
+
+        Visual positions are found by scanning input_ids for image_token_index
+        — the exact analogue of UniVLA's
+            is_visual = (frame_ids >= vis_start) & (frame_ids <= vis_end)
+        but using SpatialVLA's single dedicated image token id, so the match
+        is exact rather than a range.
+
+        Returns None if weight_1d is None (disables masking).
+        """
+        if weight_1d is None:
+            return None
+
+        seq_len = input_ids.shape[1]
+        seq_weight = torch.ones(seq_len, dtype=torch.float32)
+
+        is_visual = (input_ids[0] == self._image_token_index)
+        vis_idx = is_visual.nonzero(as_tuple=True)[0]   # absolute positions
+        n_vis = vis_idx.numel()
+
+        if n_vis > 0:
+            # weight_1d is the flattened patch grid in row-major order, which
+            # matches the order image tokens appear in input_ids.
+            w = weight_1d[:n_vis]
+            seq_weight[vis_idx[:w.numel()]] = w
+        else:
+            print(
+                "[LatentSaccade][warn] no image tokens found in input_ids "
+                f"(image_token_index={self._image_token_index}); mask is a no-op"
+            )
+
+        return seq_weight
+
     # ── step: main inference with latent saccade ──────────────────────────
 
     def step(self, image: np.ndarray, goal: str) -> np.ndarray:
@@ -606,7 +657,7 @@ class LatentSaccadeSpatialVLAInference:
         """Reset per-episode state (call at episode start)."""
         self.saccade.reset()
         self._current_instruction = None
-        self._current_weight_1d = None
+        self._current_seq_weight = None
         self._fovea_bbox_cache = None
         self._secondary_bbox_cache = None
         self._last_good_fovea = None
