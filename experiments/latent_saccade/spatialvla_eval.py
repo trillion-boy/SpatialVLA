@@ -134,14 +134,16 @@ def parse_args():
     # Toggle foveation
     p.add_argument("--enable-latent-mask", action="store_true", default=True)
     p.add_argument("--no-latent-mask",     dest="enable_latent_mask", action="store_false")
-    # grasp 단계 foveation (UniVLA 처럼 기본 ON — 양쪽 phase foveate)
-    p.add_argument("--foveate-grasp", action="store_true", default=True,
-                   help="grasp 단계에도 foveation 적용 (UniVLA 방식, 기본 ON)")
-    p.add_argument("--no-foveate-grasp", dest="foveate_grasp", action="store_false",
-                   help="grasp 단계 foveation 끄고 place 단계만 적용")
-    # bbox area 필터 (UniVLA 에는 없음 — 기본 비활성)
-    p.add_argument("--enable-area-filter", action="store_true", default=False,
-                   help="bbox area 필터 활성화 (>99% full-frame 오탐만 차단)")
+    # grasp 단계 foveation (SpatialVLA 는 기본 OFF — place 단계만 foveate)
+    p.add_argument("--foveate-grasp", action="store_true", default=False,
+                   help="grasp 단계에도 foveation 적용 (실험용, 기본 OFF)")
+    p.add_argument("--no-foveate-grasp", dest="foveate_grasp", action="store_false")
+    # bbox area 필터 (전체화면 오탐 차단, 기본 활성)
+    p.add_argument("--enable-area-filter", action="store_true", default=True,
+                   help="bbox area 필터 활성화 (전체화면 오탐 차단)")
+    p.add_argument("--no-area-filter", dest="enable_area_filter", action="store_false")
+    p.add_argument("--place-max-area-ratio", type=float, default=0.6,
+                   help="place 단계 bbox 최대 면적 비율 (이 이상은 오탐으로 거부)")
     # Video / OOD
     p.add_argument("--save-video",  action="store_true")
     p.add_argument("--no-overlay",  action="store_true",
@@ -240,6 +242,7 @@ def main():
         enable_latent_mask=args.enable_latent_mask,
         foveate_grasp=args.foveate_grasp,
         enable_area_filter=args.enable_area_filter,
+        place_max_area_ratio=args.place_max_area_ratio,
         dino_debug_dir=args.dino_debug_dir,
     )
     print(

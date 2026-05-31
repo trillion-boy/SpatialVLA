@@ -254,13 +254,17 @@ class LatentSaccadeSpatialVLAInference(SpatialVLAInference):
         min_place_steps: int = 8,
         max_grasp_steps: int = 60,
         enable_latent_mask: bool = True,
-        # foveate_grasp=True → UniVLA 처럼 grasp/place 양쪽 모두 foveation.
-        # bg_weight=1.0 (배경 비억제) 이면 grasp 방해가 없으므로 양쪽 적용 가능.
-        foveate_grasp: bool = True,
-        # UniVLA 에는 bbox area 필터가 없음 (DINO confidence + cache 로만 거름).
-        # SpatialVLA 의 yellow basket 은 sink 카메라에서 화면의 89~98% 를
-        # 정상적으로 차지하므로 area 필터는 오히려 정상 탐지를 거부함 → 기본 비활성.
-        enable_area_filter: bool = False,
+        # SpatialVLA 는 256패치뿐이라 fovea 가 20~25% 를 차지 → grasp 단계에
+        # foveation 을 걸면 그리퍼 미세 제어 신호가 묻혀 파지가 망가짐.
+        # (UniVLA 는 visual token 이 수천 개라 fovea 비율이 작아 괜찮았음)
+        # 따라서 SpatialVLA 는 grasp 는 끄고 place 단계에만 foveation 적용.
+        foveate_grasp: bool = False,
+        # area 필터: SpatialVLA sink 카메라에서 'yellow basket' DINO 탐지가
+        # 가끔 전체화면([1,70,638,478]≈85%)으로 잡힘 → fovea=256(전부) 가 되어
+        # foveation 무의미. 정상 basket 은 화면의 ~20% 이므로 상한 0.6 으로
+        # 전체화면 오탐만 차단.
+        enable_area_filter: bool = True,
+        place_max_area_ratio: float = 0.6,
         dino_debug_dir: Optional[str] = None,
     ):
         if image_size is None:
@@ -285,8 +289,9 @@ class LatentSaccadeSpatialVLAInference(SpatialVLAInference):
         self._enable_latent_mask = enable_latent_mask
         # foveate_grasp=True → UniVLA 처럼 grasp/place 양쪽 모두 foveation.
         self._foveate_grasp = foveate_grasp
-        # area 필터 사용 여부 (UniVLA 처럼 기본 비활성)
+        # area 필터: 전체화면 오탐 차단 (기본 활성, place 상한 0.6)
         self._enable_area_filter = enable_area_filter
+        self._place_max_area_ratio = place_max_area_ratio
         self._dino_cache_steps = dino_cache_steps
         self._bbox_margin = bbox_margin
         self._dino_debug_dir = dino_debug_dir
@@ -435,15 +440,19 @@ class LatentSaccadeSpatialVLAInference(SpatialVLAInference):
 
             H, W = image.shape[:2]
 
+            # place 단계 상한. grasp 단계는 foveate_grasp=False 면 _get_bboxes 가
+            # 애초에 호출되지 않으므로 사실상 place 전용 필터.
+            max_area_ratio = self._place_max_area_ratio if self.saccade.state == "place" else 0.5
+
             def _area_ok(bbox):
-                # UniVLA 방식: 기본적으로 area 필터 비활성 (DINO confidence 로만 거름).
-                # enable_area_filter=True 일 때만 명백한 full-frame 오탐(>99%)을 차단.
+                # 전체화면 오탐 차단. 정상 basket 은 화면의 ~20% 이므로 통과,
+                # 전체화면 오탐(~85%) 은 거부.
                 if not self._enable_area_filter:
                     return True
                 x1, y1, x2, y2 = bbox
                 ratio = ((x2 - x1) * (y2 - y1)) / (W * H)
-                if ratio > 0.99:
-                    print(f"[DINO] bbox area {ratio:.1%} > 99% → rejected as false positive")
+                if ratio > max_area_ratio:
+                    print(f"[DINO] bbox area {ratio:.1%} > {max_area_ratio:.0%} → rejected as false positive")
                     return False
                 return True
 
@@ -550,9 +559,9 @@ class LatentSaccadeSpatialVLAInference(SpatialVLAInference):
             print(f"[LatentSaccade] Instruction → src='{src}'  dst='{dst}'")
 
         # ── 2. DINO detection on original image (before resize) ────────────
-        # UniVLA 방식: foveate_grasp=True (기본) 이면 grasp/place 양쪽 모두 foveation.
-        # bg_weight=1.0 (배경 비억제) 이면 grasp 방해가 없음.
-        # foveate_grasp=False 로 두면 grasp 단계 foveation 을 끄고 place 만 적용.
+        # SpatialVLA 는 grasp 단계 foveation 이 파지를 망치므로(256패치 한계)
+        # 기본적으로 place 단계에만 foveation 적용 (foveate_grasp=False).
+        # foveate_grasp=True 로 두면 grasp 단계에도 적용(실험용).
         foveate_now = self._enable_latent_mask and (
             self._foveate_grasp or self.saccade.state == "place"
         )
