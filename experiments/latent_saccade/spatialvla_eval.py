@@ -263,8 +263,13 @@ def main():
             # step() returns (raw_action, action) — identical to official policy
             raw_action, action = policy.step(image, instruction)
 
-            # action is a dict: world_vector, rot_axangle, gripper, terminate_episode
-            obs, _, done, truncated, info = env.step(action)
+            # official maniskill2_evaluator concatenates the dict into a flat array
+            env_action = np.concatenate([
+                action["world_vector"],
+                action["rot_axangle"],
+                np.atleast_1d(action["gripper"]),
+            ])
+            obs, _, done, truncated, info = env.step(env_action)
             image = apply_brightness(get_image(env, obs, cam_name), args.brightness)
 
             if not grasped and isinstance(info, dict):
