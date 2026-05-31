@@ -242,23 +242,27 @@ class LatentSaccadeSpatialVLAInference(SpatialVLAInference):
         box_threshold: float = 0.15,
         text_threshold: float = 0.15,
         bbox_margin: int = 2,
-        # ── UniVLA fovea-only boost recipe (검증된 기본값) ──────────────────
-        #   bg_weight=1.0      배경 절대 억제 안 함 (억제 시 공간 계획 파괴)
-        #   place_src_weight   source/dest 영역 약한 boost
-        #   fovea_weight       target 영역 boost → attention score = w² 증폭
+        # ── fovea-only boost recipe ─────────────────────────────────────────
+        #   bg_weight=1.0          배경 절대 억제 안 함 (억제 시 공간 계획 파괴)
+        #   place_src_weight       place 단계 source(eggplant) 영역 약한 boost
+        #   grasp_fovea_weight     grasp 단계 target boost — 약하게(1.15).
+        #                          SpatialVLA 는 256패치라 fovea 가 25% 차지 →
+        #                          강하게 걸면 그리퍼 미세제어 신호가 묻혀 파지 망가짐.
+        #   place_fovea_weight     place 단계 target boost — 강하게(1.3).
         bg_weight: float = 1.0,
         place_src_weight: float = 1.1,
-        fovea_weight: float = 1.3,
+        grasp_fovea_weight: float = 1.15,
+        place_fovea_weight: float = 1.3,
+        # 하위호환: fovea_weight 를 주면 grasp/place 둘 다 그 값으로 덮어씀.
+        fovea_weight: Optional[float] = None,
         min_grasp_steps: int = 15,
         consecutive_close_required: int = 3,
         min_place_steps: int = 8,
         max_grasp_steps: int = 60,
         enable_latent_mask: bool = True,
-        # SpatialVLA 는 256패치뿐이라 fovea 가 20~25% 를 차지 → grasp 단계에
-        # foveation 을 걸면 그리퍼 미세 제어 신호가 묻혀 파지가 망가짐.
-        # (UniVLA 는 visual token 이 수천 개라 fovea 비율이 작아 괜찮았음)
-        # 따라서 SpatialVLA 는 grasp 는 끄고 place 단계에만 foveation 적용.
-        foveate_grasp: bool = False,
+        # 사용자 가설: grasp(잡을 물체)·place(놓을 곳) 양쪽 모두 target 에
+        # foveation 집중. grasp 는 weight 를 약하게(1.15) 걸어 파지 방해 최소화.
+        foveate_grasp: bool = True,
         # area 필터: SpatialVLA sink 카메라에서 'yellow basket' DINO 탐지가
         # 가끔 전체화면([1,70,638,478]≈85%)으로 잡힘 → fovea=256(전부) 가 되어
         # foveation 무의미. 정상 basket 은 화면의 ~20% 이므로 상한 0.6 으로
@@ -285,7 +289,13 @@ class LatentSaccadeSpatialVLAInference(SpatialVLAInference):
         # ── Saccade weights ────────────────────────────────────────────────
         self._bg_weight = bg_weight
         self._place_src_weight = place_src_weight
-        self._fovea_weight = fovea_weight
+        # grasp/place 단계별 fovea weight 분리. fovea_weight 가 명시되면 둘 다 덮어씀.
+        if fovea_weight is not None:
+            self._grasp_fovea_weight = fovea_weight
+            self._place_fovea_weight = fovea_weight
+        else:
+            self._grasp_fovea_weight = grasp_fovea_weight
+            self._place_fovea_weight = place_fovea_weight
         self._enable_latent_mask = enable_latent_mask
         # foveate_grasp=True → UniVLA 처럼 grasp/place 양쪽 모두 foveation.
         self._foveate_grasp = foveate_grasp
@@ -520,10 +530,13 @@ class LatentSaccadeSpatialVLAInference(SpatialVLAInference):
             r1, c1, r2, c2 = sec_region
             grid[r1:r2, c1:c2] = self._place_src_weight
 
+        # phase 별 fovea weight: grasp(약하게) / place(강하게)
+        fovea_w = (self._grasp_fovea_weight if self.saccade.state == "grasp"
+                   else self._place_fovea_weight)
         fov_region = _bbox_to_grid(fovea_bbox)
         if fov_region:
             r1, c1, r2, c2 = fov_region
-            grid[r1:r2, c1:c2] = self._fovea_weight
+            grid[r1:r2, c1:c2] = fovea_w
 
         if self._dino_debug_dir is not None:
             self._save_debug_image(image, fovea_bbox, secondary_bbox, grid)
@@ -559,9 +572,9 @@ class LatentSaccadeSpatialVLAInference(SpatialVLAInference):
             print(f"[LatentSaccade] Instruction → src='{src}'  dst='{dst}'")
 
         # ── 2. DINO detection on original image (before resize) ────────────
-        # SpatialVLA 는 grasp 단계 foveation 이 파지를 망치므로(256패치 한계)
-        # 기본적으로 place 단계에만 foveation 적용 (foveate_grasp=False).
-        # foveate_grasp=True 로 두면 grasp 단계에도 적용(실험용).
+        # 사용자 가설: grasp(잡을 물체)·place(놓을 곳) 양쪽 모두 target foveation.
+        # grasp 는 grasp_fovea_weight(1.15) 로 약하게 걸어 파지 방해 최소화.
+        # foveate_grasp=False 로 두면 grasp 를 끄고 place 단계만 적용(실험용).
         foveate_now = self._enable_latent_mask and (
             self._foveate_grasp or self.saccade.state == "place"
         )
@@ -572,9 +585,11 @@ class LatentSaccadeSpatialVLAInference(SpatialVLAInference):
             fovea_bbox = secondary_bbox = None
             weight_1d = None
 
-        n_fovea = int((weight_1d >= self._fovea_weight).sum()) if weight_1d is not None else 0
+        _fw = (self._grasp_fovea_weight if self.saccade.state == "grasp"
+               else self._place_fovea_weight)
+        n_fovea = int((weight_1d >= _fw).sum()) if weight_1d is not None else 0
         n_src = (
-            int(((weight_1d >= self._place_src_weight) & (weight_1d < self._fovea_weight)).sum())
+            int(((weight_1d >= self._place_src_weight) & (weight_1d < _fw)).sum())
             if weight_1d is not None else 0
         )
         n_bg = int((weight_1d < self._place_src_weight).sum()) if weight_1d is not None else 0

@@ -114,11 +114,16 @@ def parse_args():
                    choices=list(TASK_CONFIGS.keys()))
     p.add_argument("--n-episodes", type=int, default=24)
     p.add_argument("--output-dir", default="./latent_saccade_spatialvla_results")
-    # Saccade weights (UniVLA fovea-only boost recipe)
+    # Saccade weights (fovea-only boost, grasp/place 분리)
     p.add_argument("--bg-weight",        type=float, default=1.0,
-                   help="배경 weight. 1.0=억제 안 함 (UniVLA 권장). 낮추면 공간 계획 파괴")
+                   help="배경 weight. 1.0=억제 안 함. 낮추면 공간 계획 파괴")
     p.add_argument("--place-src-weight", type=float, default=1.1)
-    p.add_argument("--fovea-weight",     type=float, default=1.3)
+    p.add_argument("--grasp-fovea-weight", type=float, default=1.15,
+                   help="grasp 단계 target fovea weight (약하게 — 파지 방해 최소화)")
+    p.add_argument("--place-fovea-weight", type=float, default=1.3,
+                   help="place 단계 target fovea weight (강하게 — placement 정밀도)")
+    p.add_argument("--fovea-weight",     type=float, default=None,
+                   help="주면 grasp/place 둘 다 이 값으로 덮어씀 (하위호환)")
     # Saccade timing
     p.add_argument("--min-grasp-steps",  type=int, default=15)
     p.add_argument("--max-grasp-steps",  type=int, default=60,
@@ -234,6 +239,8 @@ def main():
         text_threshold=args.text_threshold,
         bg_weight=args.bg_weight,
         place_src_weight=args.place_src_weight,
+        grasp_fovea_weight=args.grasp_fovea_weight,
+        place_fovea_weight=args.place_fovea_weight,
         fovea_weight=args.fovea_weight,
         min_grasp_steps=args.min_grasp_steps,
         max_grasp_steps=args.max_grasp_steps,
@@ -349,9 +356,12 @@ def main():
         "success_rate": sr,
         "avg_steps": float(np.mean([r["steps"] for r in results])),
         "config": {
-            "fovea_weight": args.fovea_weight,
+            "grasp_fovea_weight": args.grasp_fovea_weight,
+            "place_fovea_weight": args.place_fovea_weight,
+            "fovea_weight_override": args.fovea_weight,
             "bg_weight": args.bg_weight,
             "place_src_weight": args.place_src_weight,
+            "foveate_grasp": args.foveate_grasp,
             "min_grasp_steps": args.min_grasp_steps,
             "consec_close": args.consec_close,
             "dino_cache_steps": args.dino_cache_steps,
