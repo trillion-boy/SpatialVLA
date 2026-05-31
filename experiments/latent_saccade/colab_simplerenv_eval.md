@@ -432,19 +432,15 @@ if on and off:
 
 ---
 
-## 20. 공용 평가 스크립트 (추가 task용)
+## 20. PutSpoonOnTableCloth — Baseline (OFF)
 
-아래 스크립트 하나로 모든 task × ON/OFF 조합을 실행합니다.
-인자: `<task_name> <on|off> <output_dir>`
+Instruction 파싱: `src='spoon'  dst='table cloth'`
 
+셀 1 — 스크립트 작성:
 ```python
-%%writefile /tmp/run_task.sh
+%%writefile /tmp/run_spoon_off.sh
 #!/bin/bash
 set -e
-TASK="$1"
-MODE="${2:-off}"
-OUT_DIR="$3"
-
 export VK_ICD_FILENAMES=/etc/vulkan/icd.d/nvidia_icd.json
 export SIMPLER_ENV_ROOT=/content/SimplerEnv
 export PYTHONPATH=/content/SpatialVLA:$PYTHONPATH
@@ -454,80 +450,211 @@ XVFB_PID=$!
 sleep 2
 export DISPLAY=:99
 
-EXTRA=""
-[ "$MODE" = "off" ] && EXTRA="--no-latent-mask"
+cd /content/SpatialVLA
+/usr/local/envs/spatialvla/bin/python \
+  experiments/latent_saccade/spatialvla_eval.py \
+    --model-path /content/pretrain/spatialvla-4b-224-pt \
+    --unnorm-key bridge_orig/1.0.0 \
+    --task widowx_spoon_on_towel \
+    --n-episodes 24 \
+    --output-dir /content/results/spoon_off \
+    --no-latent-mask \
+    --save-video
+
+kill $XVFB_PID 2>/dev/null || true
+```
+
+셀 2 — 실행:
+```python
+!bash /tmp/run_spoon_off.sh
+```
+
+## 21. PutSpoonOnTableCloth — Latent Saccade (ON)
+
+셀 1 — 스크립트 작성:
+```python
+%%writefile /tmp/run_spoon_on.sh
+#!/bin/bash
+set -e
+export VK_ICD_FILENAMES=/etc/vulkan/icd.d/nvidia_icd.json
+export SIMPLER_ENV_ROOT=/content/SimplerEnv
+export PYTHONPATH=/content/SpatialVLA:$PYTHONPATH
+
+Xvfb :99 -screen 0 1280x1024x24 &
+XVFB_PID=$!
+sleep 2
+export DISPLAY=:99
 
 cd /content/SpatialVLA
 /usr/local/envs/spatialvla/bin/python \
   experiments/latent_saccade/spatialvla_eval.py \
     --model-path /content/pretrain/spatialvla-4b-224-pt \
     --unnorm-key bridge_orig/1.0.0 \
-    --task "$TASK" \
+    --task widowx_spoon_on_towel \
     --n-episodes 24 \
-    --output-dir "$OUT_DIR" \
+    --output-dir /content/results/spoon_on \
     --fovea-weight 1.2 --bg-weight 0.9 --place-src-weight 1.0 \
-    --save-video \
-    $EXTRA
+    --save-video
 
 kill $XVFB_PID 2>/dev/null || true
 ```
 
+셀 2 — 실행:
 ```python
-!echo "run_task.sh 준비 완료"
+!bash /tmp/run_spoon_on.sh
 ```
 
 ---
 
-## 21. PutSpoonOnTableCloth 평가
-
-Instruction 파싱: `src='spoon'  dst='table cloth'` (또는 `'tablecloth'` 자동 remap)
-
-셀 1 — Baseline (OFF):
-```python
-!bash /tmp/run_task.sh widowx_spoon_on_towel off /content/results/spoon_off
-```
-
-셀 2 — Latent Saccade (ON):
-```python
-!bash /tmp/run_task.sh widowx_spoon_on_towel on /content/results/spoon_on
-```
-
----
-
-## 22. PutCarrotOnPlate 평가
+## 22. PutCarrotOnPlate — Baseline (OFF)
 
 Instruction 파싱: `src='carrot'  dst='plate'`
 
-셀 1 — Baseline (OFF):
+셀 1 — 스크립트 작성:
 ```python
-!bash /tmp/run_task.sh widowx_carrot_on_plate off /content/results/carrot_off
+%%writefile /tmp/run_carrot_off.sh
+#!/bin/bash
+set -e
+export VK_ICD_FILENAMES=/etc/vulkan/icd.d/nvidia_icd.json
+export SIMPLER_ENV_ROOT=/content/SimplerEnv
+export PYTHONPATH=/content/SpatialVLA:$PYTHONPATH
+
+Xvfb :99 -screen 0 1280x1024x24 &
+XVFB_PID=$!
+sleep 2
+export DISPLAY=:99
+
+cd /content/SpatialVLA
+/usr/local/envs/spatialvla/bin/python \
+  experiments/latent_saccade/spatialvla_eval.py \
+    --model-path /content/pretrain/spatialvla-4b-224-pt \
+    --unnorm-key bridge_orig/1.0.0 \
+    --task widowx_carrot_on_plate \
+    --n-episodes 24 \
+    --output-dir /content/results/carrot_off \
+    --no-latent-mask \
+    --save-video
+
+kill $XVFB_PID 2>/dev/null || true
 ```
 
-셀 2 — Latent Saccade (ON):
+셀 2 — 실행:
 ```python
-!bash /tmp/run_task.sh widowx_carrot_on_plate on /content/results/carrot_on
+!bash /tmp/run_carrot_off.sh
+```
+
+## 23. PutCarrotOnPlate — Latent Saccade (ON)
+
+셀 1 — 스크립트 작성:
+```python
+%%writefile /tmp/run_carrot_on.sh
+#!/bin/bash
+set -e
+export VK_ICD_FILENAMES=/etc/vulkan/icd.d/nvidia_icd.json
+export SIMPLER_ENV_ROOT=/content/SimplerEnv
+export PYTHONPATH=/content/SpatialVLA:$PYTHONPATH
+
+Xvfb :99 -screen 0 1280x1024x24 &
+XVFB_PID=$!
+sleep 2
+export DISPLAY=:99
+
+cd /content/SpatialVLA
+/usr/local/envs/spatialvla/bin/python \
+  experiments/latent_saccade/spatialvla_eval.py \
+    --model-path /content/pretrain/spatialvla-4b-224-pt \
+    --unnorm-key bridge_orig/1.0.0 \
+    --task widowx_carrot_on_plate \
+    --n-episodes 24 \
+    --output-dir /content/results/carrot_on \
+    --fovea-weight 1.2 --bg-weight 0.9 --place-src-weight 1.0 \
+    --save-video
+
+kill $XVFB_PID 2>/dev/null || true
+```
+
+셀 2 — 실행:
+```python
+!bash /tmp/run_carrot_on.sh
 ```
 
 ---
 
-## 23. StackGreenCubeOnYellowCube 평가
+## 24. StackGreenCubeOnYellowCube — Baseline (OFF)
 
-Instruction 파싱: `src='green cube'  dst='yellow cube'`  
-(두 큐브 모두 작아서 정밀한 placement가 필요 — Latent Saccade 효과가 클 수 있음)
+Instruction 파싱: `src='green cube'  dst='yellow cube'`
 
-셀 1 — Baseline (OFF):
+셀 1 — 스크립트 작성:
 ```python
-!bash /tmp/run_task.sh widowx_stack_cube off /content/results/stack_off
+%%writefile /tmp/run_stack_off.sh
+#!/bin/bash
+set -e
+export VK_ICD_FILENAMES=/etc/vulkan/icd.d/nvidia_icd.json
+export SIMPLER_ENV_ROOT=/content/SimplerEnv
+export PYTHONPATH=/content/SpatialVLA:$PYTHONPATH
+
+Xvfb :99 -screen 0 1280x1024x24 &
+XVFB_PID=$!
+sleep 2
+export DISPLAY=:99
+
+cd /content/SpatialVLA
+/usr/local/envs/spatialvla/bin/python \
+  experiments/latent_saccade/spatialvla_eval.py \
+    --model-path /content/pretrain/spatialvla-4b-224-pt \
+    --unnorm-key bridge_orig/1.0.0 \
+    --task widowx_stack_cube \
+    --n-episodes 24 \
+    --output-dir /content/results/stack_off \
+    --no-latent-mask \
+    --save-video
+
+kill $XVFB_PID 2>/dev/null || true
 ```
 
-셀 2 — Latent Saccade (ON):
+셀 2 — 실행:
 ```python
-!bash /tmp/run_task.sh widowx_stack_cube on /content/results/stack_on
+!bash /tmp/run_stack_off.sh
+```
+
+## 25. StackGreenCubeOnYellowCube — Latent Saccade (ON)
+
+셀 1 — 스크립트 작성:
+```python
+%%writefile /tmp/run_stack_on.sh
+#!/bin/bash
+set -e
+export VK_ICD_FILENAMES=/etc/vulkan/icd.d/nvidia_icd.json
+export SIMPLER_ENV_ROOT=/content/SimplerEnv
+export PYTHONPATH=/content/SpatialVLA:$PYTHONPATH
+
+Xvfb :99 -screen 0 1280x1024x24 &
+XVFB_PID=$!
+sleep 2
+export DISPLAY=:99
+
+cd /content/SpatialVLA
+/usr/local/envs/spatialvla/bin/python \
+  experiments/latent_saccade/spatialvla_eval.py \
+    --model-path /content/pretrain/spatialvla-4b-224-pt \
+    --unnorm-key bridge_orig/1.0.0 \
+    --task widowx_stack_cube \
+    --n-episodes 24 \
+    --output-dir /content/results/stack_on \
+    --fovea-weight 1.2 --bg-weight 0.9 --place-src-weight 1.0 \
+    --save-video
+
+kill $XVFB_PID 2>/dev/null || true
+```
+
+셀 2 — 실행:
+```python
+!bash /tmp/run_stack_on.sh
 ```
 
 ---
 
-## 24. 전체 결과 비교 (4개 task)
+## 26. 전체 결과 비교 (4개 task)
 
 ```python
 # Python 셀
