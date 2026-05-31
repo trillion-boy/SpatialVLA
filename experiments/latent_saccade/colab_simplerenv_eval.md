@@ -354,7 +354,7 @@ cd /content/SpatialVLA
     --task widowx_put_eggplant_in_basket \
     --n-episodes 24 \
     --output-dir /content/saccade_on_results \
-    --fovea-weight 1.3 --bg-weight 0.9 --place-src-weight 1.0 \
+    --fovea-weight 1.3 --bg-weight 1.0 --place-src-weight 1.1 \
     --save-video
 
 kill $XVFB_PID 2>/dev/null || true
@@ -493,7 +493,7 @@ cd /content/SpatialVLA
     --task widowx_spoon_on_towel \
     --n-episodes 24 \
     --output-dir /content/results/spoon_on \
-    --fovea-weight 1.2 --bg-weight 0.9 --place-src-weight 1.0 \
+    --fovea-weight 1.3 --bg-weight 1.0 --place-src-weight 1.1 \
     --save-video
 
 kill $XVFB_PID 2>/dev/null || true
@@ -567,7 +567,7 @@ cd /content/SpatialVLA
     --task widowx_carrot_on_plate \
     --n-episodes 24 \
     --output-dir /content/results/carrot_on \
-    --fovea-weight 1.2 --bg-weight 0.9 --place-src-weight 1.0 \
+    --fovea-weight 1.3 --bg-weight 1.0 --place-src-weight 1.1 \
     --save-video
 
 kill $XVFB_PID 2>/dev/null || true
@@ -641,7 +641,7 @@ cd /content/SpatialVLA
     --task widowx_stack_cube \
     --n-episodes 24 \
     --output-dir /content/results/stack_on \
-    --fovea-weight 1.2 --bg-weight 0.9 --place-src-weight 1.0 \
+    --fovea-weight 1.3 --bg-weight 1.0 --place-src-weight 1.1 \
     --save-video
 
 kill $XVFB_PID 2>/dev/null || true

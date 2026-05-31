@@ -114,8 +114,9 @@ def parse_args():
                    choices=list(TASK_CONFIGS.keys()))
     p.add_argument("--n-episodes", type=int, default=24)
     p.add_argument("--output-dir", default="./latent_saccade_spatialvla_results")
-    # Saccade weights
-    p.add_argument("--bg-weight",        type=float, default=1.0)
+    # Saccade weights (UniVLA fovea-only boost recipe)
+    p.add_argument("--bg-weight",        type=float, default=1.0,
+                   help="배경 weight. 1.0=억제 안 함 (UniVLA 권장). 낮추면 공간 계획 파괴")
     p.add_argument("--place-src-weight", type=float, default=1.1)
     p.add_argument("--fovea-weight",     type=float, default=1.3)
     # Saccade timing
@@ -133,6 +134,14 @@ def parse_args():
     # Toggle foveation
     p.add_argument("--enable-latent-mask", action="store_true", default=True)
     p.add_argument("--no-latent-mask",     dest="enable_latent_mask", action="store_false")
+    # grasp 단계 foveation (UniVLA 처럼 기본 ON — 양쪽 phase foveate)
+    p.add_argument("--foveate-grasp", action="store_true", default=True,
+                   help="grasp 단계에도 foveation 적용 (UniVLA 방식, 기본 ON)")
+    p.add_argument("--no-foveate-grasp", dest="foveate_grasp", action="store_false",
+                   help="grasp 단계 foveation 끄고 place 단계만 적용")
+    # bbox area 필터 (UniVLA 에는 없음 — 기본 비활성)
+    p.add_argument("--enable-area-filter", action="store_true", default=False,
+                   help="bbox area 필터 활성화 (>99% full-frame 오탐만 차단)")
     # Video / OOD
     p.add_argument("--save-video",  action="store_true")
     p.add_argument("--no-overlay",  action="store_true",
@@ -229,6 +238,8 @@ def main():
         consecutive_close_required=args.consec_close,
         min_place_steps=args.min_place_steps,
         enable_latent_mask=args.enable_latent_mask,
+        foveate_grasp=args.foveate_grasp,
+        enable_area_filter=args.enable_area_filter,
         dino_debug_dir=args.dino_debug_dir,
     )
     print(
