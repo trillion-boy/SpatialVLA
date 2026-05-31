@@ -50,6 +50,9 @@ TASK_CONFIGS = {
         "control_freq": 5,
         "sim_freq": 500,
         "max_episode_steps": 120,
+        # robot init: from scripts/bridge.sh (widowx_sink_camera_setup scene)
+        "robot_init_x": 0.127,
+        "robot_init_y": 0.06,
     },
     "widowx_carrot_on_plate": {
         "env_name": "PutCarrotOnPlateInScene-v0",
@@ -62,6 +65,9 @@ TASK_CONFIGS = {
         "control_freq": 5,
         "sim_freq": 500,
         "max_episode_steps": 60,
+        # robot init: from scripts/bridge.sh (widowx bridge_table_1_v1 scene)
+        "robot_init_x": 0.147,
+        "robot_init_y": 0.028,
     },
     "widowx_stack_cube": {
         "env_name": "StackGreenCubeOnYellowCubeBakedTexInScene-v0",
@@ -74,6 +80,9 @@ TASK_CONFIGS = {
         "control_freq": 5,
         "sim_freq": 500,
         "max_episode_steps": 60,
+        # robot init: from scripts/bridge.sh (widowx bridge_table_1_v1 scene)
+        "robot_init_x": 0.147,
+        "robot_init_y": 0.028,
     },
     "widowx_spoon_on_towel": {
         "env_name": "PutSpoonOnTableClothInScene-v0",
@@ -86,6 +95,9 @@ TASK_CONFIGS = {
         "control_freq": 5,
         "sim_freq": 500,
         "max_episode_steps": 60,
+        # robot init: from scripts/bridge.sh (widowx bridge_table_1_v1 scene)
+        "robot_init_x": 0.147,
+        "robot_init_y": 0.028,
     },
 }
 
@@ -163,7 +175,13 @@ def build_env(cfg, ep_id, no_overlay=False, overlay_path=None):
             kw["rgb_overlay_path"] = cand
             kw["rgb_overlay_cameras"] = cfg["rgb_overlay_cameras"]
     env = build_maniskill2_env(cfg["env_name"], **kw)
-    obs, _ = env.reset(options={"obj_init_options": {"episode_id": ep_id}})
+    reset_options = {"obj_init_options": {"episode_id": ep_id}}
+    if "robot_init_x" in cfg:
+        reset_options["robot_init_options"] = {
+            "init_xy": np.array([cfg["robot_init_x"], cfg["robot_init_y"]]),
+            "init_rot_quat": np.array([0.0, 0.0, 0.0, 1.0]),
+        }
+    obs, _ = env.reset(options=reset_options)
     return env, obs
 
 

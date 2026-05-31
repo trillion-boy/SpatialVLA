@@ -331,40 +331,59 @@ conda run -n spatialvla python -c "import torch; print('torch', torch.__version_
 
 ## 17. 평가 실행 (Latent Saccade ON)
 
-```bash
-%%bash
-source /usr/local/etc/profile.d/conda.sh
+셀 1 — 스크립트 작성:
+```python
+%%writefile /tmp/run_saccade_on.sh
+#!/bin/bash
+set -e
+export VK_ICD_FILENAMES=/etc/vulkan/icd.d/nvidia_icd.json
 export SIMPLER_ENV_ROOT=/content/SimplerEnv
 export PYTHONPATH=/content/SpatialVLA:$PYTHONPATH
-export DISPLAY=""
-export VK_ICD_FILENAMES=/etc/vulkan/icd.d/nvidia_icd.json
+
+# headless display
+Xvfb :99 -screen 0 1280x1024x24 &
+XVFB_PID=$!
+sleep 2
+export DISPLAY=:99
 
 cd /content/SpatialVLA
-xvfb-run -a -s "-screen 0 1280x1024x24" \
-conda run -n spatialvla --no-capture-output python \
+/usr/local/envs/spatialvla/bin/python \
   experiments/latent_saccade/spatialvla_eval.py \
     --model-path /content/pretrain/spatialvla-4b-224-pt \
     --unnorm-key bridge_orig/1.0.0 \
     --task widowx_put_eggplant_in_basket \
     --n-episodes 24 \
     --output-dir /content/saccade_on_results \
-    --fovea-weight 1.3 --bg-weight 1.0 --place-src-weight 1.1 \
+    --fovea-weight 1.3 --bg-weight 0.9 --place-src-weight 1.0 \
     --save-video
+
+kill $XVFB_PID 2>/dev/null || true
+```
+
+셀 2 — 실행:
+```python
+!bash /tmp/run_saccade_on.sh
 ```
 
 ## 18. 베이스라인 실행 (Latent Saccade OFF, 대조군)
 
-```bash
-%%bash
-source /usr/local/etc/profile.d/conda.sh
+셀 1 — 스크립트 작성:
+```python
+%%writefile /tmp/run_saccade_off.sh
+#!/bin/bash
+set -e
+export VK_ICD_FILENAMES=/etc/vulkan/icd.d/nvidia_icd.json
 export SIMPLER_ENV_ROOT=/content/SimplerEnv
 export PYTHONPATH=/content/SpatialVLA:$PYTHONPATH
-export DISPLAY=""
-export VK_ICD_FILENAMES=/etc/vulkan/icd.d/nvidia_icd.json
+
+# headless display
+Xvfb :99 -screen 0 1280x1024x24 &
+XVFB_PID=$!
+sleep 2
+export DISPLAY=:99
 
 cd /content/SpatialVLA
-xvfb-run -a -s "-screen 0 1280x1024x24" \
-conda run -n spatialvla --no-capture-output python \
+/usr/local/envs/spatialvla/bin/python \
   experiments/latent_saccade/spatialvla_eval.py \
     --model-path /content/pretrain/spatialvla-4b-224-pt \
     --unnorm-key bridge_orig/1.0.0 \
@@ -373,6 +392,13 @@ conda run -n spatialvla --no-capture-output python \
     --output-dir /content/saccade_off_results \
     --no-latent-mask \
     --save-video
+
+kill $XVFB_PID 2>/dev/null || true
+```
+
+셀 2 — 실행:
+```python
+!bash /tmp/run_saccade_off.sh
 ```
 
 ## 19. 결과 비교
@@ -407,6 +433,13 @@ if on and off:
 ---
 
 ## 트러블슈팅
+
+- **Vulkan segfault (`[svulkan2] Vulkan is incompatible with your driver`)**:
+  `xvfb-run ... conda run ...` 패턴은 `conda run`이 새로운 서브프로세스를 생성하면서
+  `DISPLAY` 환경 변수가 전달되지 않아 Vulkan 초기화에 실패합니다.
+  셀 17/18은 이를 피하기 위해 Xvfb를 직접 백그라운드로 실행한 뒤
+  `/usr/local/envs/spatialvla/bin/python`을 직접 호출합니다.
+  (conda activate 없이도 해당 환경의 Python/패키지를 직접 사용합니다.)
 
 - **`get_robot_control_mode(robot, "spatialvla")` KeyError**:
   `spatialvla_eval.py`는 이미 `try/except`로 `"spatialvla"` 실패 시 `"openvla"` 제어 모드로 fallback합니다. WidowX의 경우 둘 다 `arm_pd_ee_delta_pose`로 매핑되어 동일합니다.
