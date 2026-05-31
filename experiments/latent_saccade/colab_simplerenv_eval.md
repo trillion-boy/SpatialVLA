@@ -401,7 +401,7 @@ kill $XVFB_PID 2>/dev/null || true
 !bash /tmp/run_saccade_off.sh
 ```
 
-## 19. 결과 비교
+## 19. 결과 비교 (eggplant → basket)
 
 ```python
 # Python 셀
@@ -428,6 +428,144 @@ print(f"{'='*50}")
 if on and off:
     d = on['success_rate'] - off['success_rate']
     print(f"성공률 차이 (ON - OFF): {d:+.1%}")
+```
+
+---
+
+## 20. 공용 평가 스크립트 (추가 task용)
+
+아래 스크립트 하나로 모든 task × ON/OFF 조합을 실행합니다.
+인자: `<task_name> <on|off> <output_dir>`
+
+```python
+%%writefile /tmp/run_task.sh
+#!/bin/bash
+set -e
+TASK="$1"
+MODE="${2:-off}"
+OUT_DIR="$3"
+
+export VK_ICD_FILENAMES=/etc/vulkan/icd.d/nvidia_icd.json
+export SIMPLER_ENV_ROOT=/content/SimplerEnv
+export PYTHONPATH=/content/SpatialVLA:$PYTHONPATH
+
+Xvfb :99 -screen 0 1280x1024x24 &
+XVFB_PID=$!
+sleep 2
+export DISPLAY=:99
+
+EXTRA=""
+[ "$MODE" = "off" ] && EXTRA="--no-latent-mask"
+
+cd /content/SpatialVLA
+/usr/local/envs/spatialvla/bin/python \
+  experiments/latent_saccade/spatialvla_eval.py \
+    --model-path /content/pretrain/spatialvla-4b-224-pt \
+    --unnorm-key bridge_orig/1.0.0 \
+    --task "$TASK" \
+    --n-episodes 24 \
+    --output-dir "$OUT_DIR" \
+    --fovea-weight 1.2 --bg-weight 0.9 --place-src-weight 1.0 \
+    --save-video \
+    $EXTRA
+
+kill $XVFB_PID 2>/dev/null || true
+```
+
+```python
+!echo "run_task.sh 준비 완료"
+```
+
+---
+
+## 21. PutSpoonOnTableCloth 평가
+
+Instruction 파싱: `src='spoon'  dst='table cloth'` (또는 `'tablecloth'` 자동 remap)
+
+셀 1 — Baseline (OFF):
+```python
+!bash /tmp/run_task.sh widowx_spoon_on_towel off /content/results/spoon_off
+```
+
+셀 2 — Latent Saccade (ON):
+```python
+!bash /tmp/run_task.sh widowx_spoon_on_towel on /content/results/spoon_on
+```
+
+---
+
+## 22. PutCarrotOnPlate 평가
+
+Instruction 파싱: `src='carrot'  dst='plate'`
+
+셀 1 — Baseline (OFF):
+```python
+!bash /tmp/run_task.sh widowx_carrot_on_plate off /content/results/carrot_off
+```
+
+셀 2 — Latent Saccade (ON):
+```python
+!bash /tmp/run_task.sh widowx_carrot_on_plate on /content/results/carrot_on
+```
+
+---
+
+## 23. StackGreenCubeOnYellowCube 평가
+
+Instruction 파싱: `src='green cube'  dst='yellow cube'`  
+(두 큐브 모두 작아서 정밀한 placement가 필요 — Latent Saccade 효과가 클 수 있음)
+
+셀 1 — Baseline (OFF):
+```python
+!bash /tmp/run_task.sh widowx_stack_cube off /content/results/stack_off
+```
+
+셀 2 — Latent Saccade (ON):
+```python
+!bash /tmp/run_task.sh widowx_stack_cube on /content/results/stack_on
+```
+
+---
+
+## 24. 전체 결과 비교 (4개 task)
+
+```python
+# Python 셀
+import json, os
+
+RESULTS = [
+    ("PutEggplant→Basket",  "widowx_put_eggplant_in_basket",
+     "/content/saccade_off_results", "/content/saccade_on_results"),
+    ("PutSpoon→Towel",       "widowx_spoon_on_towel",
+     "/content/results/spoon_off",   "/content/results/spoon_on"),
+    ("PutCarrot→Plate",      "widowx_carrot_on_plate",
+     "/content/results/carrot_off",  "/content/results/carrot_on"),
+    ("StackGreen→Yellow",    "widowx_stack_cube",
+     "/content/results/stack_off",   "/content/results/stack_on"),
+]
+
+def load_result(dir_path, task_key):
+    fp = os.path.join(dir_path, f"results_{task_key}.json")
+    if not os.path.exists(fp):
+        return None
+    with open(fp) as f:
+        return json.load(f)
+
+print(f"{'Task':<24} {'OFF 파지':>8} {'OFF 성공':>8}  {'ON 파지':>8} {'ON 성공':>8}  {'Δ성공':>7}")
+print("─" * 72)
+for label, task_key, off_dir, on_dir in RESULTS:
+    off = load_result(off_dir, task_key)
+    on  = load_result(on_dir,  task_key)
+    off_g = f"{off['grasp_rate']:.1%}"  if off else "N/A"
+    off_s = f"{off['success_rate']:.1%}" if off else "N/A"
+    on_g  = f"{on['grasp_rate']:.1%}"   if on  else "N/A"
+    on_s  = f"{on['success_rate']:.1%}"  if on  else "N/A"
+    delta = ""
+    if off and on:
+        d = on["success_rate"] - off["success_rate"]
+        delta = f"{d:+.1%}"
+    print(f"{label:<24} {off_g:>8} {off_s:>8}  {on_g:>8} {on_s:>8}  {delta:>7}")
+print("─" * 72)
 ```
 
 ---
