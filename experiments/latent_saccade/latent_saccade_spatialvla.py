@@ -660,7 +660,7 @@ class LatentSaccadeSpatialVLAInference(SpatialVLAInference):
         if fovea_bbox is not None:
             x1, y1, x2, y2 = fovea_bbox
             draw.rectangle([x1, y1, x2, y2], outline="red", width=3)
-            draw.text((x1, y1 - 12), f"fovea ({self._fovea_weight})", fill="red")
+            draw.text((x1, y1 - 12), f"fovea (g{self._grasp_fovea_weight}/p{self._place_fovea_weight})", fill="red")
         if secondary_bbox is not None:
             x1, y1, x2, y2 = secondary_bbox
             draw.rectangle([x1, y1, x2, y2], outline="blue", width=2)
