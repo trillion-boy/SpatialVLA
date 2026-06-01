@@ -75,6 +75,8 @@ class SaccadeStateMachine:
         self.state: str = "grasp"
         self._close_count: int = 0
         self._grasp_steps: int = 0
+        # place 전환 후 경과 스텝. place foveation 지연(lift 확보)용.
+        self._place_steps: int = 0
 
     @property
     def current_target(self) -> str:
@@ -111,12 +113,16 @@ class SaccadeStateMachine:
                 self._close_count = 0
                 print(f"[LatentSaccade] grasp→place  (timeout at {steps} steps)", flush=True)
                 return True
+        else:
+            # place 단계: 경과 스텝 누적 (foveation 지연 판정용)
+            self._place_steps += 1
         return False
 
     def reset(self):
         self.state = "grasp"
         self._close_count = 0
         self._grasp_steps = 0
+        self._place_steps = 0
 
 
 # ---------------------------------------------------------------------------
@@ -263,6 +269,11 @@ class LatentSaccadeSpatialVLAInference(SpatialVLAInference):
         # 사용자 가설: grasp(잡을 물체)·place(놓을 곳) 양쪽 모두 target 에
         # foveation 집중. grasp 는 weight 를 약하게(1.15) 걸어 파지 방해 최소화.
         foveate_grasp: bool = True,
+        # place 전환 직후 foveation 지연 스텝. SpatialVLA 는 do_sample=False
+        # (결정론적) 라, grasp phase 가 OFF 와 비트 동일하지만 place 전환이
+        # '잡기 마무리(lift)' 순간과 겹쳐 그 직후 basket foveation 이 물체를
+        # 놓치게 만든다. 전환 후 N 스텝은 foveation 을 미뤄 lift 를 먼저 확보.
+        place_foveation_delay: int = 5,
         # area 필터: SpatialVLA sink 카메라에서 'yellow basket' DINO 탐지가
         # 가끔 전체화면([1,70,638,478]≈85%)으로 잡힘 → fovea=256(전부) 가 되어
         # foveation 무의미. 정상 basket 은 화면의 ~20% 이므로 상한 0.6 으로
@@ -299,6 +310,8 @@ class LatentSaccadeSpatialVLAInference(SpatialVLAInference):
         self._enable_latent_mask = enable_latent_mask
         # foveate_grasp=True → UniVLA 처럼 grasp/place 양쪽 모두 foveation.
         self._foveate_grasp = foveate_grasp
+        # place 전환 후 foveation 지연 (lift 확보)
+        self._place_foveation_delay = place_foveation_delay
         # area 필터: 전체화면 오탐 차단 (기본 활성, place 상한 0.6)
         self._enable_area_filter = enable_area_filter
         self._place_max_area_ratio = place_max_area_ratio
@@ -575,8 +588,14 @@ class LatentSaccadeSpatialVLAInference(SpatialVLAInference):
         # 사용자 가설: grasp(잡을 물체)·place(놓을 곳) 양쪽 모두 target foveation.
         # grasp 는 grasp_fovea_weight(1.15) 로 약하게 걸어 파지 방해 최소화.
         # foveate_grasp=False 로 두면 grasp 를 끄고 place 단계만 적용(실험용).
+        # place 전환 직후 place_foveation_delay 스텝은 foveation 보류 →
+        # 물체를 완전히 들어올린(lift) 뒤에 basket 으로 attention 이동.
+        place_ready = (
+            self.saccade.state == "place"
+            and self.saccade._place_steps >= self._place_foveation_delay
+        )
         foveate_now = self._enable_latent_mask and (
-            self._foveate_grasp or self.saccade.state == "place"
+            (self._foveate_grasp and self.saccade.state == "grasp") or place_ready
         )
         if foveate_now:
             fovea_bbox, secondary_bbox = self._get_bboxes(image)

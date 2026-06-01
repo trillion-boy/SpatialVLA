@@ -143,6 +143,9 @@ def parse_args():
     p.add_argument("--foveate-grasp", action="store_true", default=False,
                    help="grasp 단계에도 foveation 적용 (실험용, 기본 OFF)")
     p.add_argument("--no-foveate-grasp", dest="foveate_grasp", action="store_false")
+    # place 전환 후 foveation 지연 (lift 확보 → 파지 마무리 방해 방지)
+    p.add_argument("--place-foveation-delay", type=int, default=5,
+                   help="place 전환 후 N 스텝 foveation 보류 (물체 lift 확보용)")
     # bbox area 필터 (전체화면 오탐 차단, 기본 활성)
     p.add_argument("--enable-area-filter", action="store_true", default=True,
                    help="bbox area 필터 활성화 (전체화면 오탐 차단)")
@@ -248,6 +251,7 @@ def main():
         min_place_steps=args.min_place_steps,
         enable_latent_mask=args.enable_latent_mask,
         foveate_grasp=args.foveate_grasp,
+        place_foveation_delay=args.place_foveation_delay,
         enable_area_filter=args.enable_area_filter,
         place_max_area_ratio=args.place_max_area_ratio,
         dino_debug_dir=args.dino_debug_dir,
@@ -362,6 +366,7 @@ def main():
             "bg_weight": args.bg_weight,
             "place_src_weight": args.place_src_weight,
             "foveate_grasp": args.foveate_grasp,
+            "place_foveation_delay": args.place_foveation_delay,
             "min_grasp_steps": args.min_grasp_steps,
             "consec_close": args.consec_close,
             "dino_cache_steps": args.dino_cache_steps,
