@@ -278,7 +278,11 @@ class LatentSaccadeSpatialVLAInference(SpatialVLAInference):
         # 가끔 전체화면([1,70,638,478]≈85%)으로 잡힘 → fovea=256(전부) 가 되어
         # foveation 무의미. 정상 basket 은 화면의 ~20% 이므로 상한 0.6 으로
         # 전체화면 오탐만 차단.
+        # bridge_table_1_v1 태스크(stack/carrot/spoon)에서는 물체가 화면의
+        # 80~85% 를 차지하므로 0.5/0.6 으로 두면 모든 탐지가 거부됨.
+        # 해당 태스크는 --grasp-max-area-ratio 0.95 --place-max-area-ratio 0.95 로 실행.
         enable_area_filter: bool = True,
+        grasp_max_area_ratio: float = 0.5,
         place_max_area_ratio: float = 0.6,
         dino_debug_dir: Optional[str] = None,
     ):
@@ -312,8 +316,9 @@ class LatentSaccadeSpatialVLAInference(SpatialVLAInference):
         self._foveate_grasp = foveate_grasp
         # place 전환 후 foveation 지연 (lift 확보)
         self._place_foveation_delay = place_foveation_delay
-        # area 필터: 전체화면 오탐 차단 (기본 활성, place 상한 0.6)
+        # area 필터: 전체화면 오탐 차단 (기본 활성)
         self._enable_area_filter = enable_area_filter
+        self._grasp_max_area_ratio = grasp_max_area_ratio
         self._place_max_area_ratio = place_max_area_ratio
         self._dino_cache_steps = dino_cache_steps
         self._bbox_margin = bbox_margin
@@ -463,9 +468,8 @@ class LatentSaccadeSpatialVLAInference(SpatialVLAInference):
 
             H, W = image.shape[:2]
 
-            # place 단계 상한. grasp 단계는 foveate_grasp=False 면 _get_bboxes 가
-            # 애초에 호출되지 않으므로 사실상 place 전용 필터.
-            max_area_ratio = self._place_max_area_ratio if self.saccade.state == "place" else 0.5
+            max_area_ratio = (self._place_max_area_ratio if self.saccade.state == "place"
+                              else self._grasp_max_area_ratio)
 
             def _area_ok(bbox):
                 # 전체화면 오탐 차단. 정상 basket 은 화면의 ~20% 이므로 통과,

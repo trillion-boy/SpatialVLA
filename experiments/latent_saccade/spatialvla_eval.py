@@ -150,8 +150,10 @@ def parse_args():
     p.add_argument("--enable-area-filter", action="store_true", default=True,
                    help="bbox area 필터 활성화 (전체화면 오탐 차단)")
     p.add_argument("--no-area-filter", dest="enable_area_filter", action="store_false")
+    p.add_argument("--grasp-max-area-ratio", type=float, default=0.5,
+                   help="grasp 단계 bbox 최대 면적 비율. eggplant(sink cam)=0.5, bridge_table_1_v1=0.95")
     p.add_argument("--place-max-area-ratio", type=float, default=0.6,
-                   help="place 단계 bbox 최대 면적 비율 (이 이상은 오탐으로 거부)")
+                   help="place 단계 bbox 최대 면적 비율. eggplant(sink cam)=0.6, bridge_table_1_v1=0.95")
     # Video / OOD
     p.add_argument("--save-video",  action="store_true")
     p.add_argument("--no-overlay",  action="store_true",
@@ -253,6 +255,7 @@ def main():
         foveate_grasp=args.foveate_grasp,
         place_foveation_delay=args.place_foveation_delay,
         enable_area_filter=args.enable_area_filter,
+        grasp_max_area_ratio=args.grasp_max_area_ratio,
         place_max_area_ratio=args.place_max_area_ratio,
         dino_debug_dir=args.dino_debug_dir,
     )
