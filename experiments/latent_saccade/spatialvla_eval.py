@@ -144,7 +144,7 @@ def parse_args():
                    help="grasp 단계에도 foveation 적용 (실험용, 기본 OFF)")
     p.add_argument("--no-foveate-grasp", dest="foveate_grasp", action="store_false")
     # place 전환 후 foveation 지연 (lift 확보 → 파지 마무리 방해 방지)
-    p.add_argument("--place-foveation-delay", type=int, default=5,
+    p.add_argument("--place-foveation-delay", type=int, default=2,
                    help="place 전환 후 N 스텝 foveation 보류 (물체 lift 확보용)")
     # bbox area 필터 (전체화면 오탐 차단, 기본 활성)
     p.add_argument("--enable-area-filter", action="store_true", default=True,

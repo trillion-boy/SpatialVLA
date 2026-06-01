@@ -179,9 +179,7 @@ class GroundingDINODetector:
             print(f"[DINO] '{text.rstrip('.')}' score={best_score:.3f} → {best_box.astype(int).tolist()}")
         return detections
 
-    _NOUN_REMAP: dict = {
-        "towel": "tablecloth",
-    }
+    _NOUN_REMAP: dict = {}
 
     @staticmethod
     def extract_source_dest_nouns(instruction: str) -> Tuple[str, str]:
@@ -273,7 +271,7 @@ class LatentSaccadeSpatialVLAInference(SpatialVLAInference):
         # (결정론적) 라, grasp phase 가 OFF 와 비트 동일하지만 place 전환이
         # '잡기 마무리(lift)' 순간과 겹쳐 그 직후 basket foveation 이 물체를
         # 놓치게 만든다. 전환 후 N 스텝은 foveation 을 미뤄 lift 를 먼저 확보.
-        place_foveation_delay: int = 5,
+        place_foveation_delay: int = 2,
         # area 필터: SpatialVLA sink 카메라에서 'yellow basket' DINO 탐지가
         # 가끔 전체화면([1,70,638,478]≈85%)으로 잡힘 → fovea=256(전부) 가 되어
         # foveation 무의미. 정상 basket 은 화면의 ~20% 이므로 상한 0.6 으로

@@ -495,7 +495,7 @@ cd /content/SpatialVLA
     --n-episodes 24 \
     --output-dir /content/results/spoon_on \
     --grasp-fovea-weight 1.1 --place-fovea-weight 1.3 --bg-weight 1.0 --place-src-weight 1.1 \
-    --foveate-grasp --place-foveation-delay 5 --max-grasp-steps 100 \
+    --foveate-grasp --place-foveation-delay 2 \
     --grasp-max-area-ratio 0.95 --place-max-area-ratio 0.95 \
     --save-video
 
@@ -571,7 +571,7 @@ cd /content/SpatialVLA
     --n-episodes 24 \
     --output-dir /content/results/carrot_on \
     --grasp-fovea-weight 1.1 --place-fovea-weight 1.3 --bg-weight 1.0 --place-src-weight 1.1 \
-    --foveate-grasp --place-foveation-delay 5 --max-grasp-steps 100 \
+    --foveate-grasp --place-foveation-delay 2 \
     --grasp-max-area-ratio 0.95 --place-max-area-ratio 0.95 \
     --save-video
 
@@ -647,7 +647,7 @@ cd /content/SpatialVLA
     --n-episodes 24 \
     --output-dir /content/results/stack_on \
     --grasp-fovea-weight 1.1 --place-fovea-weight 1.3 --bg-weight 1.0 --place-src-weight 1.1 \
-    --foveate-grasp --place-foveation-delay 5 --max-grasp-steps 100 \
+    --foveate-grasp --place-foveation-delay 2 \
     --grasp-max-area-ratio 0.95 --place-max-area-ratio 0.95 \
     --save-video
 
