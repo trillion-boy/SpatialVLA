@@ -355,6 +355,7 @@ cd /content/SpatialVLA
     --n-episodes 24 \
     --output-dir /content/saccade_on_results \
     --grasp-fovea-weight 1.15 --place-fovea-weight 1.3 --bg-weight 1.0 --place-src-weight 1.1 \
+    --no-foveate-grasp --place-foveation-delay 5 \
     --save-video
 
 kill $XVFB_PID 2>/dev/null || true
@@ -494,6 +495,7 @@ cd /content/SpatialVLA
     --n-episodes 24 \
     --output-dir /content/results/spoon_on \
     --grasp-fovea-weight 1.15 --place-fovea-weight 1.3 --bg-weight 1.0 --place-src-weight 1.1 \
+    --no-foveate-grasp --place-foveation-delay 5 \
     --save-video
 
 kill $XVFB_PID 2>/dev/null || true
@@ -568,6 +570,7 @@ cd /content/SpatialVLA
     --n-episodes 24 \
     --output-dir /content/results/carrot_on \
     --grasp-fovea-weight 1.15 --place-fovea-weight 1.3 --bg-weight 1.0 --place-src-weight 1.1 \
+    --no-foveate-grasp --place-foveation-delay 5 \
     --save-video
 
 kill $XVFB_PID 2>/dev/null || true
@@ -642,6 +645,7 @@ cd /content/SpatialVLA
     --n-episodes 24 \
     --output-dir /content/results/stack_on \
     --grasp-fovea-weight 1.15 --place-fovea-weight 1.3 --bg-weight 1.0 --place-src-weight 1.1 \
+    --no-foveate-grasp --place-foveation-delay 5 \
     --save-video
 
 kill $XVFB_PID 2>/dev/null || true
