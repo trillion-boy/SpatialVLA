@@ -125,7 +125,7 @@ def parse_args():
     p.add_argument("--fovea-weight",     type=float, default=None,
                    help="주면 grasp/place 둘 다 이 값으로 덮어씀 (하위호환)")
     # Saccade timing
-    p.add_argument("--min-grasp-steps",  type=int, default=15)
+    p.add_argument("--min-grasp-steps",  type=int, default=10)
     p.add_argument("--max-grasp-steps",  type=int, default=60,
                    help="Force grasp→place after this many steps (0=disabled)")
     p.add_argument("--consec-close",     type=int, default=3)

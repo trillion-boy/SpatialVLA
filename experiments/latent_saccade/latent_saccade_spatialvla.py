@@ -58,7 +58,7 @@ class SaccadeStateMachine:
 
     def __init__(
         self,
-        min_grasp_steps: int = 15,
+        min_grasp_steps: int = 10,
         consecutive_close_required: int = 3,
         min_place_steps: int = 8,
         max_grasp_steps: int = 60,
