@@ -188,3 +188,28 @@ $PY experiments/latent_saccade/spatialvla_eval.py \
   --foveate-grasp --place-foveation-delay 5 --min-grasp-steps 15 \
   --grasp-max-area-ratio 0.95 --place-max-area-ratio 0.95
 ```
+
+---
+
+## 부록 B: Eggplant — Weight 튜닝 실험 흐름
+
+Eggplant 태스크에서 weight를 바꿔가며 측정한 기록 (24 에피소드 기준).
+공통 비교 대상은 OFF baseline.
+
+| # | grasp fovea | place fovea | bg | foveate-grasp | 기타 | 파지율 | 성공률 |
+|---|:---:|:---:|:---:|:---:|---|:---:|:---:|
+| **OFF** | — | — | — | — | baseline | 87.50% | 66.70% |
+| 1 | 1.3 | 1.3 | 0.9 | ON | bg 억제 | ↓ | 16.7% ❌ |
+| 2 | 1.15 | 1.3 | 1.0 | ON | delay=5 | ~70% | ~62.5% |
+| 3 | 1.1 | 1.3 | 1.0 | ON | delay=5, timeout=100 | 75% | 66.7% ✅ |
+| 4 | (off) | 1.3 | 1.0 | OFF | delay=5 | 75% | 62.50% |
+| 5 | (off) | 1.3 | 1.0 | OFF | timeout=100 | 75% | 62.50% |
+
+**핵심 관찰:**
+
+- **#1 (bg=0.9):** 배경을 억제하면 성공률이 16.7%로 붕괴 — 배경 억제가 공간 계획을
+  파괴하므로 이후 bg는 1.0으로 고정.
+- **#2→#3 (grasp fovea 1.15→1.1):** grasp 단계 fovea weight를 낮출수록 회복 —
+  강한 grasp fovea는 파지를 방해한다.
+- **#3 vs #4/#5 (grasp fovea ON vs OFF):** 약한 grasp fovea(1.1)를 켠 #3이 근소하게
+  높지만(66.7% vs 62.5%), n=24에서 ±1 에피소드 수준의 노이즈 범위.

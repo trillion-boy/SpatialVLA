@@ -203,3 +203,28 @@ $PY experiments/latent_saccade/spatialvla_eval.py \
   --foveate-grasp --place-foveation-delay 5 --min-grasp-steps 15 \
   --grasp-max-area-ratio 0.95 --place-max-area-ratio 0.95
 ```
+
+---
+
+## Appendix B: Eggplant — Weight Tuning Experiment Flow
+
+Measurements while sweeping weights on the Eggplant task (24 episodes each).
+The common comparison baseline is OFF.
+
+| # | grasp fovea | place fovea | bg | foveate-grasp | Other | Grasp rate | Success rate |
+|---|:---:|:---:|:---:|:---:|---|:---:|:---:|
+| **OFF** | — | — | — | — | baseline | 87.50% | 66.70% |
+| 1 | 1.3 | 1.3 | 0.9 | ON | bg suppression | ↓ | 16.7% ❌ |
+| 2 | 1.15 | 1.3 | 1.0 | ON | delay=5 | ~70% | ~62.5% |
+| 3 | 1.1 | 1.3 | 1.0 | ON | delay=5, timeout=100 | 75% | 66.7% ✅ |
+| 4 | (off) | 1.3 | 1.0 | OFF | delay=5 | 75% | 62.50% |
+| 5 | (off) | 1.3 | 1.0 | OFF | timeout=100 | 75% | 62.50% |
+
+**Key observations:**
+
+- **#1 (bg=0.9):** suppressing the background collapses success to 16.7% —
+  background suppression destroys spatial planning, so bg is fixed at 1.0 afterward.
+- **#2→#3 (grasp fovea 1.15→1.1):** lowering the grasp-phase fovea weight recovers
+  performance — a strong grasp fovea hurts grasping.
+- **#3 vs #4/#5 (grasp fovea ON vs OFF):** keeping a weak grasp fovea (1.1) is
+  marginally higher (66.7% vs 62.5%), but within noise (±1 episode) at n=24.
